@@ -14,6 +14,7 @@ from job_search_assistant.core.errors import InfrastructureError, NotFoundError,
 _CONTENT_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ORIGINAL_NAME = "original.bin"
 _TEXT_NAME = "extracted-text.json"
+_DRAFT_NAME = "extraction-draft.json"
 
 
 class FileSystemDocumentStorage:
@@ -121,6 +122,50 @@ class FileSystemDocumentStorage:
                 details={"text_ref": text_ref, "field": "locator_map"},
             )
         return dict(locator_map)
+
+    def store_extraction_draft(self, *, draft: Mapping[str, Any]) -> str:
+        """Persist one immutable, schema-validated draft JSON payload.
+
+        The application service validates the schema before calling this method.
+        This adapter deliberately only provides durable, content-addressed
+        storage; it does not interpret model output or grant it any authority.
+        """
+        if not isinstance(draft, Mapping):
+            raise ValidationError("Extraction draft must be an object.", details={"field": "draft"})
+        try:
+            serialized = json.dumps(
+                _json_value(draft),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "Extraction draft must contain JSON-compatible values.",
+                details={"field": "draft", "reason": str(exc)},
+            ) from exc
+        content_hash = sha256(serialized).hexdigest()
+        reference = f"{content_hash}/{_DRAFT_NAME}"
+        self._store_immutable(reference, serialized)
+        return reference
+
+    def load_extraction_draft(self, *, output_ref: str) -> Mapping[str, Any]:
+        """Load an immutable extraction-draft payload without reinterpreting it."""
+        raw = self._load_bytes(file_ref=output_ref, artifact_type="extraction draft")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise InfrastructureError(
+                "Stored extraction-draft artifact is not valid UTF-8 JSON.",
+                details={"output_ref": output_ref},
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise InfrastructureError(
+                "Stored extraction-draft artifact is malformed.",
+                details={"output_ref": output_ref},
+            )
+        return dict(payload)
 
     def _load_text_payload(self, text_ref: str) -> Mapping[str, Any]:
         raw = self._load_bytes(file_ref=text_ref, artifact_type="extracted text")

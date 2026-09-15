@@ -36,8 +36,26 @@ class ResumeImportReservation:
     document: ResumeDocument
 
 
+@dataclass(frozen=True, slots=True)
+class ExtractionRunReservation:
+    """The durable extraction run associated with one StartExtractionRun command."""
+
+    state: IdempotencyReservationState
+    idempotency_record_id: str
+    run: ExtractionRun
+
+
 class CareerStore(Protocol):
     """Transactional persistence boundary for Career application services."""
+
+    def peek_resume_import(
+        self,
+        *,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ResumeImportReservation | None:
+        """Read a matching import reservation without changing its state or creating a row."""
 
     def reserve_resume_import(
         self,
@@ -47,7 +65,12 @@ class CareerStore(Protocol):
         request: Mapping[str, Any],
         context: RequestContext,
     ) -> ResumeImportReservation:
-        """Atomically reserve an import command and persist its initial document/audit state."""
+        """Reserve an import and persist its initial document/audit state.
+
+        Repeating an ``IN_PROGRESS`` key returns its original document rather
+        than inserting a second row, so an interrupted import resumes with the
+        same controlled-file reference.
+        """
 
     def finalize_resume_import(
         self,
@@ -73,6 +96,38 @@ class CareerStore(Protocol):
 
     def list_resume_texts(self, *, document_id: str) -> Sequence[ResumeText]:
         """List append-only text extractions for one document."""
+
+    def peek_extraction_run(
+        self,
+        *,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExtractionRunReservation | None:
+        """Read a matching extraction reservation without changing its state or creating a row."""
+
+    def reserve_extraction_run(
+        self,
+        *,
+        run: ExtractionRun,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExtractionRunReservation:
+        """Atomically reserve an extraction key and append its initial run checkpoint.
+
+        Repeating an ``IN_PROGRESS`` key returns the existing run rather than
+        creating a second run, allowing the work to resume safely.
+        """
+
+    def finalize_extraction_run(
+        self,
+        *,
+        run: ExtractionRun,
+        idempotency_record_id: str,
+        context: RequestContext,
+    ) -> ExtractionRun:
+        """Persist a terminal draft outcome, audit it, and complete its idempotency record."""
 
     def create_skill(self, *, skill: Skill) -> Skill:
         """Persist a normalized skill using ``''`` for a missing taxonomy reference."""

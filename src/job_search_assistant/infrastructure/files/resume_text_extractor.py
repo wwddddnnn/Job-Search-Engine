@@ -10,6 +10,7 @@ from job_search_assistant.career.ports import (
     ResumeTextExtractionError,
 )
 from job_search_assistant.career.types import ResumeDocument
+from job_search_assistant.core.errors import InfrastructureError, NotFoundError
 
 
 _SUPPORTED_MIME_TYPES = frozenset({"text/plain", "text/markdown", "text/x-markdown"})
@@ -39,6 +40,10 @@ class PlainTextResumeExtractor:
         try:
             raw = self._storage.load_document(file_ref=document.file_ref)
         except ResumeTextExtractionError:
+            raise
+        except (InfrastructureError, NotFoundError):
+            # A missing/corrupt controlled artifact is an infrastructure fault,
+            # not a terminal statement about the resume's parseability.
             raise
         except Exception as exc:
             raise ResumeTextExtractionError(

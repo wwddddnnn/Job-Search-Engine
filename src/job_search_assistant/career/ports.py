@@ -59,16 +59,20 @@ class ResumeTextExtractorPort(Protocol):
 
 
 class CareerExtractionPort(Protocol):
-    """Obtain an untrusted JSON extraction draft for a persisted text extraction."""
+    """Obtain locator-backed, untrusted JSON facts from persisted resume text.
+
+    Implementations receive the extracted text and immutable run metadata, and
+    must only propose experience, achievement, and skill candidates with a
+    source locator.  They must never label a result verified or confirmed.
+    """
 
     def extract(
         self,
         *,
-        document: ResumeDocument,
-        text: ResumeText,
+        extracted_text: str,
         run: ExtractionRun,
     ) -> Mapping[str, Any]:
-        """Return draft JSON; the caller must validate it before accepting output."""
+        """Return draft JSON; the caller validates it before accepting output."""
 
 
 class DocumentStoragePort(Protocol):
@@ -100,3 +104,9 @@ class DocumentStoragePort(Protocol):
 
     def load_locator_map(self, *, text_ref: str) -> Mapping[str, Any]:
         """Load locator metadata bundled with the extracted-text artifact."""
+
+    def store_extraction_draft(self, *, draft: Mapping[str, Any]) -> str:
+        """Persist one schema-validated draft and return an opaque immutable reference."""
+
+    def load_extraction_draft(self, *, output_ref: str) -> Mapping[str, Any]:
+        """Load a draft previously stored through :meth:`store_extraction_draft`."""
