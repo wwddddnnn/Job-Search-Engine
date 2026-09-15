@@ -184,6 +184,18 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 5 | 「已发布版本中不得出现 `draft`/`needs_clarification`/`rejected` 的 experience/skill」目前只在 domain/application 层把关，DB 的 `experiences.verification_status` 仍允许这些取值 | **S4 的 `ConfirmExperienceFacts` 必须兜住**，否则验收标准 4 存在被绕过空间 |
 | 6 | `llm_extraction_runs` 的 `status` 与 `output_ref`/`completed_at`/`error_summary` 的一致性只由 domain 保证，DB 无对应 CHECK | S3 落 store 时补一层防护 |
 
+## S3 审查遗留项（S4 必须处理）
+
+来自 S3 三轮审查的非阻塞观察：
+
+| # | 观察 | 落点 |
+|---|---|---|
+| 1 | `persist_extraction_review_transition` 目前没有任何应用服务调用方，幂等策略被显式推迟到确认切片。在 S4 明确命令边界前，**adapter/UI 不得直接调用它**——Phase 0 规定写路径必须经应用服务并携带幂等 scope/key + actor，否则先造出一个无幂等键的状态写入口 | S4 必须先决定它的归宿：复用 `finalize_extraction_run`，或由 S4 的确认用例驱动 |
+| 2 | 审计 action 复用：`career.extraction_run.draft_ready` 同时表示「首次抽取就绪」与「复核后回到草稿」，回溯时两者不可分 | S4 拆 action，或在 metadata 里带触发来源 |
+| 3 | 解析失败与入参校验失败共用 `code=validation_error`，调用方无法据此判断可重试性 | 建议给独立 code（如 `extraction_parse_error`） |
+| 4 | `completed_at` 变必填后，一致性只保证「与调用方传入值一致」，不校验时间单调性 | store 侧顺带拒绝 `completed_at < started_at` |
+| 5 | 「未配置 provider」被定为确定性失败 → 落 `draft_failed` 并**消耗 start key**，配置修好后必须换新 key | 后端口径无异议；将来 UI 文案需说明 |
+
 ## 已确认的设计决策
 
 1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。

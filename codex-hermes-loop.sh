@@ -255,7 +255,13 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
 
   # ---- 1.1 builder 产出代码 -------------------------------------------------
   {
-    printf '# 本次任务\n\n%s\n\n' "$TASK"
+    # 任务书里的 <PYBIN> 占位符必须替换成实际路径。不替换时 builder 会自己猜解释器——
+    # 实测它猜过 hermes 自带的 venv 和 conda base，还试过不存在的 .venv，都不是本项目环境。
+    printf '# 本次任务\n\n%s\n\n' "${TASK//'<PYBIN>'/$PYBIN}"
+    printf '===== 运行环境（必须使用；不要自建环境）=====\n'
+    printf '项目解释器 = %s\n' "$PYBIN"
+    printf '运行测试 = PYTHONPATH=src %s -m unittest discover -s tests\n' "$PYBIN"
+    printf '不得改用 .venv/、hermes 自带 venv 或 conda base 的解释器（仓库里没有 .venv）。\n\n'
     if [ -f "$BUILDER_CONVENTIONS" ]; then
       printf '===== 项目协作约定（必须遵守）=====\n'
       cat "$BUILDER_CONVENTIONS"
