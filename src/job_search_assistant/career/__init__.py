@@ -1,5 +1,67 @@
-"""Career Profile and Experience Library domain.
+"""Stable Career Profile and Experience Library domain contracts."""
 
-Future phases own source documents, extraction drafts, verified evidence, and
-versioned career profiles in this module.
-"""
+from job_search_assistant.career.extraction import (
+    EXTRACTION_DRAFT_SCHEMA_VERSION,
+    DraftEvidence,
+    ExperienceAchievementDraft,
+    ExperienceDraft,
+    ExperienceSkillDraft,
+    ExtractionDraft,
+    validate_draft_schema,
+    validate_extraction_draft,
+)
+from job_search_assistant.career.ports import (
+    CareerExtractionPort,
+    DocumentStoragePort,
+    ExtractedResumeText,
+    ResumeTextExtractorPort,
+)
+from job_search_assistant.career.store import CareerStore
+from job_search_assistant.career.types import (
+    CareerProfile,
+    DocumentStatus,
+    EvidenceSourceType,
+    Experience,
+    ExperienceAchievement,
+    ExperienceEvidence,
+    ExperienceSkill,
+    ExtractionRun,
+    ExtractionRunStatus,
+    ProfileVersion,
+    ResumeDocument,
+    ResumeDocumentStatus,
+    ResumeText,
+    Skill,
+    VerificationStatus,
+)
+
+__all__ = [
+    "EXTRACTION_DRAFT_SCHEMA_VERSION",
+    "CareerExtractionPort",
+    "CareerProfile",
+    "CareerStore",
+    "DocumentStatus",
+    "DocumentStoragePort",
+    "DraftEvidence",
+    "EvidenceSourceType",
+    "Experience",
+    "ExperienceAchievement",
+    "ExperienceAchievementDraft",
+    "ExperienceDraft",
+    "ExperienceEvidence",
+    "ExperienceSkill",
+    "ExperienceSkillDraft",
+    "ExtractedResumeText",
+    "ExtractionDraft",
+    "ExtractionRun",
+    "ExtractionRunStatus",
+    "ProfileVersion",
+    "ResumeDocument",
+    "ResumeDocumentStatus",
+    "ResumeText",
+    "ResumeTextExtractorPort",
+    "Skill",
+    "VerificationStatus",
+    "validate_draft_schema",
+    "validate_extraction_draft",
+]
