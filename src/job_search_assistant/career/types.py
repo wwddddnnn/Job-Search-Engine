@@ -47,9 +47,6 @@ class EvidenceSourceType(StrEnum):
     """The only allowed origins for persisted career evidence."""
 
     RESUME_DOCUMENT = "resume_document"
-    # ``DOCUMENT`` is retained as a concise synonym for adapter code.  Its
-    # serialized value remains the explicit, unambiguous resume-document type.
-    DOCUMENT = "resume_document"
     USER_ASSERTION = "user_assertion"
 
 
@@ -541,12 +538,21 @@ class Skill:
     id: str
     canonical_name: str
     created_at: datetime
-    taxonomy_ref: str | None = None
+    taxonomy_ref: str | None = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _require_text(self.id, "id"))
         object.__setattr__(self, "canonical_name", _require_text(self.canonical_name, "canonical_name"))
-        object.__setattr__(self, "taxonomy_ref", _optional_text(self.taxonomy_ref, "taxonomy_ref"))
+        # SQLite deliberately uses a non-null empty string for an unspecified
+        # taxonomy so its composite uniqueness rule has deterministic semantics.
+        # Accepting ``None`` here preserves callers built against S1 while
+        # normalising the durable domain value to that same representation.
+        taxonomy_ref = (
+            ""
+            if self.taxonomy_ref is None
+            else _require_text(self.taxonomy_ref, "taxonomy_ref")
+        )
+        object.__setattr__(self, "taxonomy_ref", taxonomy_ref)
         _require_datetime(self.created_at, "created_at")
 
 

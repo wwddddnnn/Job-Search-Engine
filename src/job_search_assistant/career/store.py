@@ -7,7 +7,11 @@ of concrete I/O dependencies.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from dataclasses import dataclass
+from typing import Any, Mapping, Protocol, Sequence
+
+from job_search_assistant.core.context import RequestContext
+from job_search_assistant.core.idempotency import IdempotencyReservationState
 
 from job_search_assistant.career.types import (
     CareerProfile,
@@ -23,8 +27,37 @@ from job_search_assistant.career.types import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeImportReservation:
+    """The durable document associated with one ImportResumeDocument command."""
+
+    state: IdempotencyReservationState
+    idempotency_record_id: str
+    document: ResumeDocument
+
+
 class CareerStore(Protocol):
-    """Transactional persistence boundary for future Career application services."""
+    """Transactional persistence boundary for Career application services."""
+
+    def reserve_resume_import(
+        self,
+        *,
+        document: ResumeDocument,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ResumeImportReservation:
+        """Atomically reserve an import command and persist its initial document/audit state."""
+
+    def finalize_resume_import(
+        self,
+        *,
+        document: ResumeDocument,
+        text: ResumeText | None,
+        idempotency_record_id: str,
+        context: RequestContext,
+    ) -> ResumeDocument:
+        """Atomically save a terminal parse state, audit event, and replay response."""
 
     def create_resume_document(self, *, document: ResumeDocument) -> ResumeDocument:
         """Persist a newly imported document without replacing historical documents."""
@@ -40,6 +73,9 @@ class CareerStore(Protocol):
 
     def list_resume_texts(self, *, document_id: str) -> Sequence[ResumeText]:
         """List append-only text extractions for one document."""
+
+    def create_skill(self, *, skill: Skill) -> Skill:
+        """Persist a normalized skill using ``''`` for a missing taxonomy reference."""
 
     def create_extraction_run(self, *, run: ExtractionRun) -> ExtractionRun:
         """Append a new extraction run instead of overwriting prior output."""

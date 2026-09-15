@@ -15,8 +15,9 @@ from job_search_assistant.career.ports import (
     DocumentStoragePort,
     ExtractedResumeText,
     ResumeTextExtractorPort,
+    ResumeTextExtractionError,
 )
-from job_search_assistant.career.store import CareerStore
+from job_search_assistant.career.store import CareerStore, ResumeImportReservation
 from job_search_assistant.career.types import (
     CareerProfile,
     DocumentStatus,
@@ -58,7 +59,9 @@ __all__ = [
     "ProfileVersion",
     "ResumeDocument",
     "ResumeDocumentStatus",
+    "ResumeImportReservation",
     "ResumeText",
+    "ResumeTextExtractionError",
     "ResumeTextExtractorPort",
     "Skill",
     "VerificationStatus",
