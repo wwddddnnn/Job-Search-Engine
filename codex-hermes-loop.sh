@@ -291,8 +291,19 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
   } > "$WORKDIR/context.txt"
 
   {
-    printf '审查下面这次改动。输入文件里依次是：本次任务、架构与阶段文档、本轮 git diff、自动验收测试结果。\n'
-    printf '严格按你的 system prompt 输出格式作答：前三行必须是 STATUS / COMMIT_MSG / LOG_NOTE，然后另起一段写详细意见。\n'
+    cat <<'FMT'
+审查下面这次改动。输入里依次是：本次任务、架构与阶段文档、本轮 git diff、自动验收测试结果。
+
+【输出格式硬性要求 — 脚本按字面值解析，写错等于本轮审查作废并触发人工介入】
+第 1 行：STATUS 后面只允许三选一，必须原样照抄下面三个字面值之一：
+    STATUS: PASS
+    STATUS: NEEDS_FIX
+    STATUS: ESCALATE
+  不允许使用 APPROVE / LGTM / OK / REJECT / BLOCK / 通过 / 拒绝 等任何同义写法。
+第 2 行：COMMIT_MSG: 一句话描述这次改动做了什么（中文，≤50 字，用于 git commit message）
+第 3 行：LOG_NOTE: 一句话说清这一轮做了什么、卡在哪、要不要人管（中文，面向人类浏览）
+第 4 行起：空一行，再写详细意见。
+FMT
     if [ "$TRUNCATED" = "yes" ]; then
       printf '注意：本轮 diff 因体积超限被截断，若关键上下文缺失请按你的规则明确指出缺少哪些文件。\n'
     fi
