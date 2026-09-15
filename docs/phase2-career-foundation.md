@@ -171,6 +171,19 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 - **B 步**：接入真实 LLM provider（用户已确认在 Phase 2 完成后进行）。
 - **Phase 3**：Job Matching。
 
+## S1 审查遗留项（S2–S4 必须处理）
+
+来自 S1 轮 reviewer 的 6 条非阻塞观察。它们不阻断 S1，但都属于**必须在后续切片收口**的口径问题：
+
+| # | 观察 | 落点 |
+|---|---|---|
+| 1 | `EvidenceSourceType.DOCUMENT` 与 `RESUME_DOCUMENT` 同值（StrEnum alias），设计文档里没有这个拼写 | S2 前清理：删除，或在 docstring 注明「仅为 adapter 便利别名」 |
+| 2 | `Skill.taxonomy_ref` 在 domain 可空 `None`，迁移里是 `NOT NULL DEFAULT ''` 且参与 `UNIQUE(canonical_name, taxonomy_ref)` | S2/S4 落 store 时必须显式做 `None → ''` 映射，否则撞非空约束。建议 domain 侧默认 `''` 对齐 |
+| 3 | `ExtractedResumeText.locator_map` 是 `Mapping[str, Any]`，持久化的 `ResumeText` 只有 `locator_map_ref`，而 `DocumentStoragePort` 没有存取 locator map 的方法 | S2 补一个方法，或明确 locator map 与提取文本同文件落盘 |
+| 4 | `career_profiles` 前向引用尚未创建的 `profile_versions`；`llm_extraction_runs.published_profile_version_id` 未加 FK；建表顺序依赖是隐式的 | 已在 0004 内以注释说明；后续若拆分/重跑迁移需保持顺序 |
+| 5 | 「已发布版本中不得出现 `draft`/`needs_clarification`/`rejected` 的 experience/skill」目前只在 domain/application 层把关，DB 的 `experiences.verification_status` 仍允许这些取值 | **S4 的 `ConfirmExperienceFacts` 必须兜住**，否则验收标准 4 存在被绕过空间 |
+| 6 | `llm_extraction_runs` 的 `status` 与 `output_ref`/`completed_at`/`error_summary` 的一致性只由 domain 保证，DB 无对应 CHECK | S3 落 store 时补一层防护 |
+
 ## 已确认的设计决策
 
 1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。

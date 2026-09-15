@@ -22,7 +22,8 @@
 #   ARCH_DOCS="a.md b.md"       喂给 reviewer 的架构/阶段文档（空格分隔）
 #   TEST_CMD="..."              每轮验收测试命令
 #   PYBIN=/path/to/python       验收测试用的解释器（也可写进仓库根的 dev.env）
-#   MAX_CONTEXT_KB=150          reviewer 输入上限，超出则截断 diff
+#   MAX_CONTEXT_KB=300          reviewer 输入上限，超出则按文件裁剪 diff（并列出未包含的文件）
+#   KEEP_RUNS=1                 保留本轮中间产物（.job-search-assistant/loop-runs/<时间戳>/）
 #   SKIP_TESTS=1                跳过测试门（不建议）
 #   DRY_RUN=1                   本地演练：不 commit、不 push
 #
@@ -38,7 +39,7 @@ set -uo pipefail
 BUILDER="${BUILDER:-codex}"
 REVIEWER="${REVIEWER:-hermes}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
-MAX_CONTEXT_KB="${MAX_CONTEXT_KB:-150}"
+MAX_CONTEXT_KB="${MAX_CONTEXT_KB:-300}"
 LOG_FILE="DEVELOPMENT_LOG.md"
 REVIEWER_PROMPT=".opencode/prompts/reviewer.md"
 BUILDER_CONVENTIONS="docs/builder-conventions.md"
@@ -82,6 +83,10 @@ fi
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "当前目录不是 git 仓库。"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || die "无法进入仓库根目录 $REPO_ROOT"
+
+# 本地辅助脚本（纯本地解析，零 token 成本）
+STREAM_FILTER="$REPO_ROOT/scripts/codex-stream-filter.py"
+CAP_DIFF="$REPO_ROOT/scripts/cap-diff.py"
 
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
 if [ -z "$BRANCH" ]; then
@@ -161,21 +166,46 @@ build_architecture_text() {
   done
 }
 
+# builder 的真实退出码经由全局 BUILDER_RC 传出：
+# 流式管道下 $? 只会反映最后一个 tee 的状态，不能用它判断 builder 是否失败。
+BUILDER_RC=0
 run_builder() {
   local prompt_file="$1" out_file="$2"
+  local raw_file="$WORKDIR/builder_raw.jsonl"
+  BUILDER_RC=0
   if [ "$BUILDER" = "codex" ]; then
-    "$CODEX_BIN" exec --sandbox workspace-write "$(cat "$prompt_file")" > "$out_file" 2>&1
+    if [ -f "$STREAM_FILTER" ]; then
+      # --json 只改输出格式，不增加 token 消耗。
+      # tee 落一份原始 JSONL 供排查，过滤器渲染成人可读行实时显示在终端面板，
+      # 再 tee 一份可读日志给 reviewer 与后续解析。
+      "$CODEX_BIN" exec --sandbox workspace-write --json "$(cat "$prompt_file")" 2>&1 \
+        | tee "$raw_file" \
+        | "$PYBIN" "$STREAM_FILTER" \
+        | tee "$out_file"
+      BUILDER_RC=${PIPESTATUS[0]}
+    else
+      warn "找不到 $STREAM_FILTER，本轮退化为不流式（过程不可见）。"
+      "$CODEX_BIN" exec --sandbox workspace-write "$(cat "$prompt_file")" > "$out_file" 2>&1
+      BUILDER_RC=$?
+    fi
   elif [ "$BUILDER" = "cmd" ]; then
     ( eval "$BUILDER_CMD" ) > "$out_file" 2>&1
+    BUILDER_RC=$?
   else
     # 注意: -z 的取值必须紧跟在 -z 后面，否则 argparse 会把下一个选项当成它的值
     hermes -t coding --in "$REPO_ROOT" -z "$(cat "$prompt_file")" > "$out_file" 2>&1
+    BUILDER_RC=$?
   fi
+  return 0
 }
 
 builder_looks_broken() {
-  # codex 配额用尽/认证失败时会退出码 0 但打印这类信息，必须显式识别
-  grep -qiE "hit your usage limit|usage limit reached|insufficient_quota|401 Unauthorized|not logged in|please run .*login" "$1"
+  # codex 配额用尽/认证失败时会退出码 0 但打印这类信息，必须显式识别。
+  # 可读日志与原始 JSONL 都查：渲染后错误文本可能只在其中一份里完整。
+  local pattern="hit your usage limit|usage limit reached|insufficient_quota|401 Unauthorized|not logged in|please run .*login"
+  grep -qiE "$pattern" "$1" 2>/dev/null && return 0
+  grep -qiE "$pattern" "$2" 2>/dev/null && return 0
+  return 1
 }
 
 TESTS_STATE=""
@@ -246,10 +276,9 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
 
   say "--- builder ($BUILDER) 开工 ---"
   run_builder "$WORKDIR/builder_prompt.txt" "$WORKDIR/builder_out.txt"
-  BUILDER_RC=$?
   tail -25 "$WORKDIR/builder_out.txt" | sed 's/^/    /'
 
-  if builder_looks_broken "$WORKDIR/builder_out.txt"; then
+  if builder_looks_broken "$WORKDIR/builder_out.txt" "$WORKDIR/builder_raw.jsonl"; then
     warn "builder 报告配额/认证问题，无法继续。原始输出尾部："
     tail -6 "$WORKDIR/builder_out.txt" | sed 's/^/    /'
     warn "本轮未产生可审查的改动，请人工处理（换 builder 或补额度）后重跑。"
@@ -281,24 +310,34 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
 
   # ---- 1.4 组装 reviewer 输入 ---------------------------------------------
   ARCH_BYTES=$(wc -c < "$WORKDIR/arch.txt" | tr -d ' ')
-  DIFF_BYTES=$(wc -c < "$WORKDIR/diff.txt" | tr -d ' ')
   CAP_BYTES=$(( MAX_CONTEXT_KB * 1024 ))
-  BUDGET=$(( CAP_BYTES - ARCH_BYTES - 8192 ))
+  BUDGET=$(( CAP_BYTES - ARCH_BYTES - 16384 ))
+  if [ "$BUDGET" -lt 32768 ]; then BUDGET=32768; fi
 
-  cp "$WORKDIR/diff.txt" "$WORKDIR/diff_for_review.txt"
+  # 改动清单单独给一份：即使 diff 内容被裁剪，reviewer 也能看到「改了哪些文件」的全貌。
+  # （上一轮就是因为朴素截断，reviewer 看不到 core/discovery 有无改动，只能靠测试结果推断。）
+  git diff --cached --name-status > "$WORKDIR/diffnames.txt"
+
   TRUNCATED="no"
-  if [ "$DIFF_BYTES" -gt "$BUDGET" ]; then
-    TRUNCATED="yes"
-    head -c "$BUDGET" "$WORKDIR/diff.txt" > "$WORKDIR/diff_for_review.txt"
-    printf '\n\n[... diff 超出 %sKB 预算被截断，只提交了前 %s 字节；如需完整改动请在本地查看 ...]\n' \
-      "$MAX_CONTEXT_KB" "$BUDGET" >> "$WORKDIR/diff_for_review.txt"
+  if [ -f "$CAP_DIFF" ]; then
+    "$PYBIN" "$CAP_DIFF" "$WORKDIR/diff.txt" "$BUDGET" "$WORKDIR/diff_for_review.txt" \
+      2> "$WORKDIR/cap_info.txt"
+    grep -q "被裁剪" "$WORKDIR/cap_info.txt" && TRUNCATED="yes"
+    say "    diff 预算：$(cat "$WORKDIR/cap_info.txt")"
+  else
+    cp "$WORKDIR/diff.txt" "$WORKDIR/diff_for_review.txt"
+    warn "找不到 $CAP_DIFF，本轮 diff 未做按文件裁剪。"
   fi
 
   {
     printf '===== 本次任务 =====\n%s\n\n' "$TASK"
     printf '===== 项目架构与阶段文档（审查依据）=====\n'
     cat "$WORKDIR/arch.txt"
-    printf '\n===== 本轮 git diff（含新增文件）=====\n'
+    printf '\n===== 本轮全部改动文件清单（name-status，完整）=====\n'
+    cat "$WORKDIR/diffnames.txt"
+    printf '\n===== 本轮改动量统计（--stat，完整）=====\n'
+    cat "$WORKDIR/diffstat.txt"
+    printf '\n===== 本轮 git diff（含新增文件；若被裁剪，缺失清单见其末尾）=====\n'
     cat "$WORKDIR/diff_for_review.txt"
     printf '\n===== 本轮自动验收测试结果（命令: %s，结论: %s）=====\n' "$TEST_CMD" "$TESTS_STATE"
     cat "$WORKDIR/tests.txt"
