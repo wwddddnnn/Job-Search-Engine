@@ -11,6 +11,9 @@
 #   3) 架构文档存在（见 ARCH_DOCS），reviewer 以它为审查依据
 #   4) builder 与 reviewer 已安装并完成认证
 #
+# 硬规则: builder 与 reviewer 原地读写同一份 checkout。本脚本不创建 worktree、
+#         不为开发克隆仓库；两者必须在同一个工作目录看到同一份文件状态。
+#
 # 可选环境变量（都有默认值）:
 #   BUILDER=codex|hermes|cmd    builder 实现，默认 codex（cmd = 直接执行 BUILDER_CMD，用于演练/接入其它 agent）
 #   BUILDER_CMD="..."           BUILDER=cmd 时执行的命令（在仓库根目录执行）
@@ -45,6 +48,7 @@ DEFAULT_ARCH_DOCS=(
   "docs/Job Search Assistant 技术架构文档.md"
   "docs/phase0-foundation.md"
   "docs/phase1-job-discovery.md"
+  "docs/phase2-career-foundation.md"
 )
 
 # Python 解释器：环境变量 PYBIN > 仓库根 dev.env > PATH 上的 python3

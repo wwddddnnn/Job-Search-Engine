@@ -66,3 +66,15 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
   commit message 由 reviewer 给出。
 - 只改工作区文件即可。
 - **不要修改 `DEVELOPMENT_LOG.md`**，它由脚本写入。
+
+## 工作副本（硬规则）
+
+builder 与 reviewer **必须原地读写同一份 checkout**：`~/code/Python/Job-Search-Engine`。
+
+- **禁止 `git worktree add` / `hermes --worktree`**：不要为开发另开工作树。
+- **禁止为开发克隆仓库**：不要在 /tmp 或任何别处再 clone 一份。
+- 不得把仓库复制到别处改完再拷回来。
+
+理由：两方必须看同一份代码索引、同一份文件状态。否则 reviewer 审的 diff 与 builder 改的文件
+不是同一份，审查结论就失去意义，去重/合并这类结论也无法复核。
+
