@@ -178,7 +178,7 @@ run_builder() {
       # --json 只改输出格式，不增加 token 消耗。
       # tee 落一份原始 JSONL 供排查，过滤器渲染成人可读行实时显示在终端面板，
       # 再 tee 一份可读日志给 reviewer 与后续解析。
-      "$CODEX_BIN" exec --sandbox workspace-write --json "$(cat "$prompt_file")" 2>&1 \
+      "$CODEX_BIN" exec --sandbox workspace-write --json "$(cat "$prompt_file")" </dev/null 2>&1 \
         | tee "$raw_file" \
         | "$PYBIN" "$STREAM_FILTER" \
         | tee "$out_file"
