@@ -282,7 +282,9 @@ class CareerExtractionTestCase(unittest.TestCase):
         self.assertIsNotNone(run.error_summary)
         self.assertEqual([], self.database.fetch_all("SELECT id FROM experiences"))
 
-    def test_provider_parse_failure_is_persisted_without_a_draft_output(self) -> None:
+    def test_provider_parse_failure_is_persisted_as_a_structured_error_without_a_draft_output(
+        self,
+    ) -> None:
         document_id = self._import_resume()
 
         with patch.object(
@@ -290,12 +292,16 @@ class CareerExtractionTestCase(unittest.TestCase):
             "extract",
             side_effect=JSONDecodeError("Malformed provider response", "{", 1),
         ):
-            with self.assertRaises(JSONDecodeError):
+            with self.assertRaises(ValidationError) as raised:
                 self.service.execute(
                     document_id=document_id,
                     idempotency_key="extraction-parse-failed-1",
                     context=self.context,
                 )
+
+        self.assertEqual("validation_error", raised.exception.code)
+        self.assertEqual("career-extraction-correlation", raised.exception.correlation_id)
+        self.assertEqual("invalid_json", raised.exception.details["reason"])
 
         row = self.database.fetch_all(
             "SELECT id FROM llm_extraction_runs WHERE document_id = ?",
@@ -306,6 +312,30 @@ class CareerExtractionTestCase(unittest.TestCase):
         self.assertIsNone(run.output_ref)
         self.assertIsNotNone(run.error_summary)
         self.assertEqual([], self.database.fetch_all("SELECT id FROM experiences"))
+
+    def test_store_persists_under_review_return_to_draft_without_changing_output(self) -> None:
+        document_id = self._import_resume()
+        result = self.service.execute(
+            document_id=document_id,
+            idempotency_key="extraction-review-round-trip-1",
+            context=self.context,
+        )
+        ready = self.store.get_extraction_run(run_id=result.run_id)
+
+        reviewing = self.store.persist_extraction_review_transition(
+            run=ready.begin_review(),
+            context=self.context,
+        )
+        returned = self.store.persist_extraction_review_transition(
+            run=reviewing.return_to_draft(),
+            context=self.context,
+        )
+
+        persisted = self.store.get_extraction_run(run_id=result.run_id)
+        self.assertEqual(ExtractionRunStatus.DRAFT_READY, returned.status)
+        self.assertEqual(returned, persisted)
+        self.assertEqual(ready.output_ref, returned.output_ref)
+        self.assertEqual(ready.completed_at, returned.completed_at)
 
     def test_candidate_without_a_source_locator_is_rejected_and_persisted_as_failed(self) -> None:
         document_id = self._import_resume()

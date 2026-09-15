@@ -129,6 +129,20 @@ class CareerStore(Protocol):
     ) -> ExtractionRun:
         """Persist a terminal draft outcome, audit it, and complete its idempotency record."""
 
+    def persist_extraction_review_transition(
+        self,
+        *,
+        run: ExtractionRun,
+        context: RequestContext,
+    ) -> ExtractionRun:
+        """Persist a legal review-state transition without consuming a start key.
+
+        This is deliberately separate from :meth:`finalize_extraction_run`:
+        the StartExtractionRun idempotency record has already completed once a
+        draft is ready, while review-state transitions need their own
+        command-level idempotency policy in the later confirmation slice.
+        """
+
     def create_skill(self, *, skill: Skill) -> Skill:
         """Persist a normalized skill using ``''`` for a missing taxonomy reference."""
 

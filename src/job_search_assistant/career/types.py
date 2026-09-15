@@ -274,16 +274,20 @@ class ExtractionRun:
         self,
         *,
         output_ref: str,
-        completed_at: datetime | None = None,
+        completed_at: datetime,
     ) -> "ExtractionRun":
-        """Accept schema-valid model output as a draft, never as verified facts."""
+        """Accept schema-valid model output as a draft, never as verified facts.
+
+        The application service supplies the completion time so a persisted
+        transition can be reconstructed deterministically for validation.
+        """
         self._require_status(ExtractionRunStatus.DRAFT_EXTRACTING, "mark extraction draft ready")
         return replace(
             self,
             status=ExtractionRunStatus.DRAFT_READY,
             output_ref=_require_text(output_ref, "output_ref"),
             error_summary=None,
-            completed_at=completed_at or datetime.now(UTC),
+            completed_at=completed_at,
             published_profile_version_id=None,
         )
 
@@ -291,7 +295,7 @@ class ExtractionRun:
         self,
         *,
         error_summary: Mapping[str, Any],
-        completed_at: datetime | None = None,
+        completed_at: datetime,
     ) -> "ExtractionRun":
         """Record a terminal model or draft-schema failure."""
         self._require_status(ExtractionRunStatus.DRAFT_EXTRACTING, "record extraction failure")
@@ -300,7 +304,7 @@ class ExtractionRun:
             status=ExtractionRunStatus.DRAFT_FAILED,
             output_ref=None,
             error_summary=_freeze_mapping(error_summary, "error_summary"),
-            completed_at=completed_at or datetime.now(UTC),
+            completed_at=completed_at,
             published_profile_version_id=None,
         )
 

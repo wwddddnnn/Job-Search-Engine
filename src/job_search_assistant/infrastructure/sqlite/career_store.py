@@ -471,6 +471,55 @@ class SQLiteCareerStore:
             )
         return run
 
+    def persist_extraction_review_transition(
+        self,
+        *,
+        run: ExtractionRun,
+        context: RequestContext,
+    ) -> ExtractionRun:
+        """Persist DraftReady/UnderReview transitions without a start-key replay.
+
+        ``StartExtractionRun`` owns its idempotency reservation and therefore
+        uses :meth:`finalize_extraction_run`.  Later transitions have a
+        different command boundary, so they must not try to complete that
+        already-consumed start reservation.
+        """
+        _require_run_storage_consistency(run)
+        if run.status not in {
+            ExtractionRunStatus.DRAFT_READY,
+            ExtractionRunStatus.UNDER_REVIEW,
+        }:
+            raise ValidationError(
+                "Only draft-ready and under-review extraction states may use the review transition path.",
+                details={"run_id": run.id, "status": run.status.value},
+            )
+        with self._database.transaction(immediate=True) as connection:
+            before = self._load_extraction_run(connection, run.id)
+            if before.status not in {
+                ExtractionRunStatus.DRAFT_READY,
+                ExtractionRunStatus.UNDER_REVIEW,
+            }:
+                raise InvalidStateError(
+                    "extraction_run",
+                    before.id,
+                    before.status.value,
+                    "persist extraction review transition",
+                )
+            self._require_valid_extraction_run_transition(before=before, after=run)
+            self._write_extraction_run(connection, run=run, previous_status=before.status)
+            self._audit.append_in_transaction(
+                connection,
+                AuditEvent.create(
+                    context=context,
+                    action=_extraction_run_transition_action(run.status),
+                    target_type="llm_extraction_run",
+                    target_id=run.id,
+                    before=_safe_extraction_run(before),
+                    after=_safe_extraction_run(run),
+                ),
+            )
+        return run
+
     def get_extraction_run(self, *, run_id: str) -> ExtractionRun:
         """Load one append-only extraction run."""
         with self._database.connect() as connection:
@@ -632,7 +681,6 @@ class SQLiteCareerStore:
         before: ExtractionRun,
         after: ExtractionRun,
     ) -> None:
-        _require_same_extraction_run_identity(before, after)
         _require_run_storage_consistency(after)
         if after.status is ExtractionRunStatus.DRAFT_READY:
             expected = (
@@ -669,7 +717,7 @@ class SQLiteCareerStore:
                 "Extraction run status is unsupported.",
                 details={"run_id": after.id, "status": after.status.value},
             )
-        _require_same_extraction_run_mutable_state(expected, after)
+        _require_same_extraction_run_state(expected, after)
 
     def _peek_idempotency_record(
         self,
@@ -798,22 +846,49 @@ class SQLiteCareerStore:
         return _row_to_extraction_run(row)
 
 
-def _require_same_extraction_run_mutable_state(
+def _require_same_extraction_run_state(
     expected: ExtractionRun,
     actual: ExtractionRun,
 ) -> None:
-    """Ensure a legal transition changes only the fields owned by the state machine."""
-    mutable = (
+    """Require the full durable run to equal the transition derived from ``before``.
+
+    ``expected`` is reconstructed from the stored pre-transition run.  Its
+    explicit ``completed_at`` comes from the proposed transition, rather than
+    a fresh wall-clock read, so full equality protects append-only metadata as
+    well as the fields the state machine is allowed to change.
+    """
+    fields = (
+        "id",
+        "document_id",
+        "input_hash",
+        "model",
+        "prompt_version",
+        "schema_version",
+        "started_at",
         "status",
         "output_ref",
         "error_summary",
         "completed_at",
         "published_profile_version_id",
     )
-    changed = [field for field in mutable if getattr(expected, field) != getattr(actual, field)]
+    changed = [field for field in fields if getattr(expected, field) != getattr(actual, field)]
     if changed:
+        immutable = {
+            "id",
+            "document_id",
+            "input_hash",
+            "model",
+            "prompt_version",
+            "schema_version",
+            "started_at",
+        }
+        message = (
+            "Extraction run transition changed immutable fields."
+            if immutable.intersection(changed)
+            else "Extraction run transition has inconsistent state-machine fields."
+        )
         raise ValidationError(
-            "Extraction run transition has inconsistent state-machine fields.",
+            message,
             details={"run_id": actual.id, "fields": changed},
         )
 
@@ -909,6 +984,21 @@ def _extraction_run_result_response(run: ExtractionRun) -> dict[str, str]:
     return {"run_id": run.id, "status": run.status.value}
 
 
+def _extraction_run_transition_action(status: ExtractionRunStatus) -> str:
+    """Name one auditable review-state transition."""
+    actions = {
+        ExtractionRunStatus.DRAFT_READY: "career.extraction_run.draft_ready",
+        ExtractionRunStatus.UNDER_REVIEW: "career.extraction_run.under_review",
+    }
+    try:
+        return actions[status]
+    except KeyError as exc:
+        raise ValidationError(
+            "Extraction run status does not have an auditable review-transition action.",
+            details={"status": status.value},
+        ) from exc
+
+
 def _require_same_document_identity(before: ResumeDocument, after: ResumeDocument) -> None:
     immutable = (
         "id",
@@ -923,24 +1013,6 @@ def _require_same_document_identity(before: ResumeDocument, after: ResumeDocumen
         raise ValidationError(
             "A resume document's immutable import fields cannot change.",
             details={"document_id": before.id, "fields": changed},
-        )
-
-
-def _require_same_extraction_run_identity(before: ExtractionRun, after: ExtractionRun) -> None:
-    immutable = (
-        "id",
-        "document_id",
-        "input_hash",
-        "model",
-        "prompt_version",
-        "schema_version",
-        "started_at",
-    )
-    changed = [field for field in immutable if getattr(before, field) != getattr(after, field)]
-    if changed:
-        raise ValidationError(
-            "An extraction run's immutable fields cannot change.",
-            details={"run_id": before.id, "fields": changed},
         )
 
 

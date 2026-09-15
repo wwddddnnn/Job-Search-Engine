@@ -135,7 +135,7 @@ class CareerFoundationDomainTestCase(unittest.TestCase):
             started_at=NOW,
         )
         self.assertEqual(ExtractionRunStatus.DRAFT_EXTRACTING, run.status)
-        ready = run.mark_draft_ready(output_ref="documents/drafts/run-1.json")
+        ready = run.mark_draft_ready(output_ref="documents/drafts/run-1.json", completed_at=NOW)
         self.assertEqual(ExtractionRunStatus.DRAFT_READY, ready.status)
         reviewing = ready.begin_review()
         self.assertEqual(ExtractionRunStatus.UNDER_REVIEW, reviewing.status)
@@ -183,7 +183,7 @@ class CareerFoundationDomainTestCase(unittest.TestCase):
             prompt_version="prompt-v1",
             schema_version=EXTRACTION_DRAFT_SCHEMA_VERSION,
             started_at=NOW,
-        ).mark_draft_ready(output_ref="documents/drafts/run-2.json")
+        ).mark_draft_ready(output_ref="documents/drafts/run-2.json", completed_at=NOW)
         with self.assertRaises(InvalidStateError) as ready_publish:
             ready.publish_profile_version(profile_version_id="profile-version-1", completed_at=NOW)
         self.assertEqual("invalid_state", ready_publish.exception.code)

@@ -309,6 +309,11 @@ class StartExtractionRun:
         Infrastructure faults deliberately escape this method with the durable
         run and idempotency checkpoint still in progress, so the same key can
         retry after the underlying dependency has recovered.
+
+        Provider configuration is a deterministic command failure for this
+        slice: it is persisted as ``draft_failed`` and the completed start key
+        replays that terminal run.  After changing configuration, callers must
+        use a new key to create a new append-only run.
         """
         try:
             payload = self.extraction_provider.extract(extracted_text=extracted_text, run=run)
@@ -317,16 +322,29 @@ class StartExtractionRun:
                 expected_schema_version=run.schema_version,
             )
             _require_draft_locators(draft)
-            output_ref = self.storage.store_extraction_draft(draft=_draft_to_payload(draft))
-            completed = run.mark_draft_ready(
-                output_ref=output_ref,
+        except json.JSONDecodeError as exc:
+            parse_error = ValidationError(
+                "Career extraction provider returned malformed JSON.",
+                details={
+                    "run_id": run.id,
+                    "document_id": run.document_id,
+                    "reason": "invalid_json",
+                },
+            ).with_correlation_id(context.correlation_id)
+            failed = run.mark_draft_failed(
+                error_summary=_extraction_error_summary(parse_error),
                 completed_at=datetime.now(UTC),
             )
+            self.store.finalize_extraction_run(
+                run=failed,
+                idempotency_record_id=idempotency_record_id,
+                context=context,
+            )
+            raise parse_error from exc
         except (
             ResumeTextExtractionError,
             UnicodeError,
             ValidationError,
-            json.JSONDecodeError,
         ) as exc:
             failed = run.mark_draft_failed(
                 error_summary=_extraction_error_summary(exc),
@@ -340,6 +358,14 @@ class StartExtractionRun:
             if isinstance(exc, ApplicationError):
                 raise exc.with_correlation_id(context.correlation_id)
             raise
+        # Artifact I/O is deliberately outside the catch above.  In particular,
+        # InfrastructureError must leave this run retryable rather than being
+        # misclassified as a terminal model/schema failure.
+        output_ref = self.storage.store_extraction_draft(draft=_draft_to_payload(draft))
+        completed = run.mark_draft_ready(
+            output_ref=output_ref,
+            completed_at=datetime.now(UTC),
+        )
         persisted = self.store.finalize_extraction_run(
             run=completed,
             idempotency_record_id=idempotency_record_id,
