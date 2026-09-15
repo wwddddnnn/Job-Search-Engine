@@ -5,9 +5,9 @@ __pycache__/
 build/
 dist/
 
-# 虚拟环境
-.venv/
-venv/
+# 虚拟环境（不带斜杠：同时忽略 .venv 目录和 .venv 符号链接）
+.venv
+venv
 
 # 工具缓存
 .mypy_cache/

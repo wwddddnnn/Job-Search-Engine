@@ -12,11 +12,13 @@
 #   4) builder 与 reviewer 已安装并完成认证
 #
 # 可选环境变量（都有默认值）:
-#   BUILDER=codex|hermes        builder 实现，默认 codex
+#   BUILDER=codex|hermes|cmd    builder 实现，默认 codex（cmd = 直接执行 BUILDER_CMD，用于演练/接入其它 agent）
+#   BUILDER_CMD="..."           BUILDER=cmd 时执行的命令（在仓库根目录执行）
 #   REVIEWER=hermes|opencode    reviewer 实现，默认 hermes
 #   MAX_ATTEMPTS=3              最大循环轮数
 #   ARCH_DOCS="a.md b.md"       喂给 reviewer 的架构/阶段文档（空格分隔）
 #   TEST_CMD="..."              每轮验收测试命令
+#   PYBIN=/path/to/python       验收测试用的解释器（也可写进仓库根的 dev.env）
 #   MAX_CONTEXT_KB=150          reviewer 输入上限，超出则截断 diff
 #   SKIP_TESTS=1                跳过测试门（不建议）
 #   DRY_RUN=1                   本地演练：不 commit、不 push
@@ -44,7 +46,14 @@ DEFAULT_ARCH_DOCS=(
   "docs/phase0-foundation.md"
   "docs/phase1-job-discovery.md"
 )
-DEFAULT_TEST_CMD='PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v'
+
+# Python 解释器：环境变量 PYBIN > 仓库根 dev.env > PATH 上的 python3
+if [ -z "${PYBIN:-}" ] && [ -f dev.env ]; then
+  # shellcheck disable=SC1091
+  . ./dev.env
+fi
+PYBIN="${PYBIN:-$(command -v python3 || true)}"
+DEFAULT_TEST_CMD="PYTHONPATH=src ${PYBIN} -m unittest discover -s tests -v"
 
 if [ -n "${ARCH_DOCS:-}" ]; then
   read -r -a ARCH_FILES <<< "$ARCH_DOCS"
@@ -81,7 +90,7 @@ fi
 
 [ -f "$REVIEWER_PROMPT" ] || die "缺少 reviewer system prompt：$REVIEWER_PROMPT"
 for f in "${ARCH_FILES[@]}"; do
-  [ -f "$f" ] || die "缺少架构文档：$f（可用 ARCH_DOCS 覆盖）"
+  [ -f "$f" ] || die "缺少架构文档：${f}（可用 ARCH_DOCS 覆盖）"
 done
 
 # builder 可执行体
@@ -96,8 +105,10 @@ if [ "$BUILDER" = "codex" ]; then
   fi
 elif [ "$BUILDER" = "hermes" ]; then
   command -v hermes >/dev/null 2>&1 || die "找不到 hermes CLI。"
+elif [ "$BUILDER" = "cmd" ]; then
+  [ -n "${BUILDER_CMD:-}" ] || die "BUILDER=cmd 时必须同时提供 BUILDER_CMD。"
 else
-  die "未知 BUILDER=$BUILDER（支持 codex|hermes）"
+  die "未知 BUILDER=${BUILDER}（支持 codex|hermes|cmd）"
 fi
 
 # reviewer 可执行体
@@ -106,7 +117,7 @@ if [ "$REVIEWER" = "hermes" ]; then
 elif [ "$REVIEWER" = "opencode" ]; then
   command -v opencode >/dev/null 2>&1 || die "找不到 opencode CLI。"
 else
-  die "未知 REVIEWER=$REVIEWER（支持 hermes|opencode）"
+  die "未知 REVIEWER=${REVIEWER}（支持 hermes|opencode）"
 fi
 
 if [ ! -f "$LOG_FILE" ]; then
@@ -139,8 +150,11 @@ run_builder() {
   local prompt_file="$1" out_file="$2"
   if [ "$BUILDER" = "codex" ]; then
     "$CODEX_BIN" exec --sandbox workspace-write "$(cat "$prompt_file")" > "$out_file" 2>&1
+  elif [ "$BUILDER" = "cmd" ]; then
+    ( eval "$BUILDER_CMD" ) > "$out_file" 2>&1
   else
-    hermes -z -t coding --in "$REPO_ROOT" "$(cat "$prompt_file")" > "$out_file" 2>&1
+    # 注意: -z 的取值必须紧跟在 -z 后面，否则 argparse 会把下一个选项当成它的值
+    hermes -t coding --in "$REPO_ROOT" -z "$(cat "$prompt_file")" > "$out_file" 2>&1
   fi
 }
 
@@ -169,7 +183,7 @@ run_reviewer() {
   local prompt_file="$1" out_file="$2"
   if [ "$REVIEWER" = "hermes" ]; then
     # -t vision: 只给 vision_analyze 一个工具，物理上无法写文件/执行命令
-    hermes -z -t vision --ignore-rules --in "$REPO_ROOT" "$(cat "$prompt_file")" > "$out_file" 2>&1
+    hermes -t vision --ignore-rules --in "$REPO_ROOT" -z "$(cat "$prompt_file")" > "$out_file" 2>&1
   else
     opencode run --agent reviewer --file "$WORKDIR/context.txt" \
       "$(cat "$WORKDIR/review_instruction.txt")" > "$out_file" 2>&1
@@ -227,7 +241,7 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
     exit 2
   fi
   if [ "$BUILDER_RC" -ne 0 ]; then
-    warn "builder 退出码非 0（$BUILDER_RC），继续检查是否仍有改动。"
+    warn "builder 退出码非 0（${BUILDER_RC}），继续检查是否仍有改动。"
   fi
 
   # ---- 1.2 收集改动（含未跟踪的新文件）--------------------------------------
@@ -309,7 +323,7 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
   esac
 
   if [ -z "$STATUS" ]; then
-    warn "reviewer 没有输出可识别的 STATUS 行（退出码 $REVIEW_RC）。输出尾部："
+    warn "reviewer 没有输出可识别的 STATUS 行（退出码 ${REVIEW_RC}）。输出尾部："
     tail -15 "$WORKDIR/last_review.txt" | sed 's/^/    /'
     warn "为安全起见按需要人工介入处理。改动仍在工作区，未提交。"
     exit 2
@@ -357,7 +371,7 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
   # ---- 1.7 决定下一步 ------------------------------------------------------
   case "$STATUS" in
     "PASS")
-      say "✅ 通过（测试: $TESTS_STATE）。"
+      say "✅ 通过（测试: ${TESTS_STATE}）。"
       exit 0
       ;;
     "ESCALATE")
