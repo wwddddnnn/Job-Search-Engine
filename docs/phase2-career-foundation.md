@@ -151,6 +151,20 @@ PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/
 
 且不访问网络、LLM、MCP 或浏览器。
 
+## 实现切片（执行顺序）
+
+Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder + reviewer 循环：
+
+| 片 | 范围 | 完成标志 |
+|---|---|---|
+| **S1** | 迁移 0004 + `career/` 领域类型与 port（types / ports / store / extraction 草稿 schema） | 迁移幂等且受 checksum 保护；领域单测（状态机合法与非法跃迁、evidence 规则）通过 |
+| **S2** | `ImportResumeDocument` + 受控文件存储 + `ResumeTextExtractorPort` 的实现骨架 | 原文件与提取文本留存可回放；替换文件产生新 document |
+| **S3** | `StartExtractionRun` + `CareerExtractionPort`（本阶段 fake）+ 草稿 schema 校验 | 输出只能是 draft；重跑新建 run 且不覆盖旧输出 |
+| **S4** | `ConfirmExperienceFacts` → `ProfileVersion` + 修订审计（复用 `audit_events`） | 只有显式确认项为 verified；before/after 可回溯 |
+| **S5** | `GetVerifiedEvidencePack` + `GetCareerProfileSnapshot` | 未确认事实进不了 pack；每项带 evidence id/scope/verified state；快照最小化 |
+
+每片的验收 = 本文档「验收标准」中与之相关的条目 + 上表该片完成标志。
+
 ## 后续阶段（不在本阶段内）
 
 - **Phase 2.5**：核验 UI（用户已确认要做，细节待定）。
