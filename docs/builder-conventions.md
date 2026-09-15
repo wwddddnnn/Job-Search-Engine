@@ -10,16 +10,17 @@
 
 ## 项目是什么
 
-Job Search Assistant：本地优先的个人求职助手，模块化单体，当前处于 **Phase 1 Job Discovery**。
+Job Search Assistant：本地优先的个人求职助手，模块化单体，当前处于 **Phase 2 Career Foundation**（S1–S3 已落地：迁移 0004 + career 领域层 + 简历导入 + 抽取草稿）。
 
 - 技术栈：**Python 3.12 标准库 + SQLite**，没有运行时第三方依赖，不要引入新依赖。
 - 测试：标准库 `unittest`（不是 pytest）。测试**不访问网络**。
 - 目录：
   - `src/job_search_assistant/core/` — 与领域无关的错误、上下文、幂等、审计抽象
   - `src/job_search_assistant/discovery/` — Job Discovery 领域类型、Provider 与持久化 port
-  - `src/job_search_assistant/infrastructure/sqlite/` — SQLite 实现
+  - `src/job_search_assistant/career/` — **Phase 2 正在实现的领域层**（types / ports / store / extraction）
+  - `src/job_search_assistant/infrastructure/{sqlite,files}/` — SQLite 与受控文件存储实现
   - `src/job_search_assistant/app_services/` — 跨领域应用服务与启动装配
-  - `applications/`、`career/`、`matching/` — 后续阶段的预留位置，**当前不要在这些目录里实现业务逻辑**
+  - `applications/`、`matching/` — 后续阶段的预留位置，**当前不要在这些目录里实现业务逻辑**
   - `migrations/` — 有序、校验和保护的迁移
   - `docs/` — 架构与阶段设计说明
 
@@ -45,20 +46,27 @@ Job Search Assistant：本地优先的个人求职助手，模块化单体，当
 7. **不碰密钥。** 不得把 API key、Authorization header 写进代码、日志、数据库或测试 fixture。
    真实 Provider 调用只在调用方显式注入 key 时发生。
 
+## 效率约定（直接决定额度消耗，必须遵守）
+
+每次工具调用都会重发全部上下文，所以**调用次数是最贵的成本**。实测一轮 S3 消耗 260–470 万 input tokens，其中相当一部分是逐文件 `cat`/`sed` 造成的。
+
+1. **合并读取**：要看多个文件就用**一条**命令读完（`sed -n '1,400p' a.py b.py c.py`，或 `for f in ...; do ...; done`），不要一个文件一条命令。
+2. **先扫后读**：先用一次 `grep -rn` / `rg --files` 定位，再只读相关片段，不要先通读整棵源码树。
+3. **合并验证**：自测、`git diff --check`、行宽检查放在**同一条**命令里跑，不要拆成三次。
+4. **不重复确认**：已经确认过的事实，不要换个命令再确认一遍。
+
 ## 每轮必须自测
 
 改完代码**先自己跑通过**再交审查，否则这一轮必然被打回：
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/python -m unittest discover -s tests
 ```
 
-可选（仓库有历史 lint／mypy 存量问题，不要求清零，但**你新增的代码不能引入新的**）：
-
-```bash
-.venv/bin/ruff check src tests
-.venv/bin/mypy src
-```
+- **这是本项目的唯一解释器**（记录在仓库根 `dev.env` 的 `PYBIN`），编排脚本每轮会在 prompt 顶部再声明一次。
+- **不要用 `.venv/`、Hermes 自带 venv 或 conda base 的 python** ——仓库里**没有** `.venv`，用了只会白跑几次命令。
+- **不要自建环境**：不建 venv、不建新 conda env、不 `pip install`。
+- 本仓库**未安装** `ruff`/`mypy`：不要去找、也不要安装。静态自检用行宽（≤100 列）+ `compileall` 代替。
 
 ## 提交
 
