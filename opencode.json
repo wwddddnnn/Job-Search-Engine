@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "reviewer": {
+      "description": "独立代码评审员，只读，负责审查 Codex 的改动，不能修改任何文件",
+      "mode": "subagent",
+      "model": "anthropic/claude-sonnet-4-6",
+      "temperature": 0.1,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      },
+      "prompt": "{file:./.opencode/prompts/reviewer.md}"
+    }
+  }
+}

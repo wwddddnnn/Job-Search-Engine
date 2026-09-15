@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 工具缓存
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本地运行产物
+.job-search-assistant/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 原始协作套件压缩包（内容已导入仓库，不再跟踪压缩包本身）
+*.zip
