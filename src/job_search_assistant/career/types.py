@@ -248,7 +248,7 @@ class ExtractionRun:
         elif self.status is ExtractionRunStatus.DRAFT_READY:
             _require_present(self.output_ref, "output_ref", self.id, self.status)
             _require_absent(self.error_summary, "error_summary", self.id, self.status)
-            _require_absent(self.completed_at, "completed_at", self.id, self.status)
+            _require_present(self.completed_at, "completed_at", self.id, self.status)
             _require_absent(self.published_profile_version_id, "published_profile_version_id", self.id, self.status)
         elif self.status is ExtractionRunStatus.DRAFT_FAILED:
             _require_absent(self.output_ref, "output_ref", self.id, self.status)
@@ -258,7 +258,7 @@ class ExtractionRun:
         elif self.status is ExtractionRunStatus.UNDER_REVIEW:
             _require_present(self.output_ref, "output_ref", self.id, self.status)
             _require_absent(self.error_summary, "error_summary", self.id, self.status)
-            _require_absent(self.completed_at, "completed_at", self.id, self.status)
+            _require_present(self.completed_at, "completed_at", self.id, self.status)
             _require_absent(self.published_profile_version_id, "published_profile_version_id", self.id, self.status)
         elif self.status is ExtractionRunStatus.PROFILE_VERSION_PUBLISHED:
             _require_present(self.output_ref, "output_ref", self.id, self.status)
@@ -270,7 +270,12 @@ class ExtractionRun:
                 self.status,
             )
 
-    def mark_draft_ready(self, *, output_ref: str) -> "ExtractionRun":
+    def mark_draft_ready(
+        self,
+        *,
+        output_ref: str,
+        completed_at: datetime | None = None,
+    ) -> "ExtractionRun":
         """Accept schema-valid model output as a draft, never as verified facts."""
         self._require_status(ExtractionRunStatus.DRAFT_EXTRACTING, "mark extraction draft ready")
         return replace(
@@ -278,7 +283,7 @@ class ExtractionRun:
             status=ExtractionRunStatus.DRAFT_READY,
             output_ref=_require_text(output_ref, "output_ref"),
             error_summary=None,
-            completed_at=None,
+            completed_at=completed_at or datetime.now(UTC),
             published_profile_version_id=None,
         )
 

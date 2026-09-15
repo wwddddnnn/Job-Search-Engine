@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from json import JSONDecodeError
 from pathlib import Path
 import tempfile
 import unittest
@@ -78,6 +79,7 @@ class CareerExtractionTestCase(unittest.TestCase):
         run = self.store.get_extraction_run(run_id=result.run_id)
         self.assertEqual(ExtractionRunStatus.DRAFT_READY, run.status)
         self.assertIsNotNone(run.output_ref)
+        self.assertIsNotNone(run.completed_at)
         draft = self.storage.load_extraction_draft(output_ref=run.output_ref or "")
         self.assertEqual(EXTRACTION_DRAFT_SCHEMA_VERSION, draft["schema_version"])
         self._assert_only_draft_statuses(draft)
@@ -182,14 +184,14 @@ class CareerExtractionTestCase(unittest.TestCase):
             extraction_provider=DeterministicCareerExtractionProvider(),
         )
 
-        with self.assertRaises(InfrastructureError) as raised:
+        with self.assertRaises(ValidationError) as raised:
             service.execute(
                 document_id=document_id,
                 idempotency_key="extraction-unconfigured-1",
                 context=self.context,
             )
 
-        self.assertEqual("infrastructure_error", raised.exception.code)
+        self.assertEqual("validation_error", raised.exception.code)
         self.assertIn("not configured", raised.exception.message.lower())
         row = self.database.fetch_all(
             "SELECT id FROM llm_extraction_runs WHERE document_id = ?",
@@ -200,6 +202,47 @@ class CareerExtractionTestCase(unittest.TestCase):
         self.assertIsNone(run.output_ref)
         self.assertIsNotNone(run.error_summary)
         self.assertEqual([], self.database.fetch_all("SELECT id FROM experiences"))
+
+    def test_draft_storage_failure_bubbles_and_leaves_the_run_retryable(self) -> None:
+        document_id = self._import_resume()
+        idempotency_key = "extraction-storage-failure-1"
+
+        with patch.object(
+            self.storage,
+            "store_extraction_draft",
+            side_effect=InfrastructureError("Simulated draft storage failure."),
+        ):
+            with self.assertRaises(InfrastructureError):
+                self.service.execute(
+                    document_id=document_id,
+                    idempotency_key=idempotency_key,
+                    context=self.context,
+                )
+
+        row = self.database.fetch_all(
+            "SELECT id, status, output_ref, error_summary_json, completed_at "
+            "FROM llm_extraction_runs WHERE document_id = ?",
+            (document_id,),
+        )[0]
+        self.assertEqual(ExtractionRunStatus.DRAFT_EXTRACTING.value, row["status"])
+        self.assertIsNone(row["output_ref"])
+        self.assertIsNone(row["error_summary_json"])
+        self.assertIsNone(row["completed_at"])
+        idempotency = self.database.fetch_all(
+            "SELECT status FROM idempotency_records "
+            "WHERE scope = ? AND idempotency_key = ?",
+            ("career.extraction_run.start", idempotency_key),
+        )[0]
+        self.assertEqual("in_progress", idempotency["status"])
+
+        retry = self.service.execute(
+            document_id=document_id,
+            idempotency_key=idempotency_key,
+            context=self.context,
+        )
+
+        self.assertEqual(str(row["id"]), retry.run_id)
+        self.assertEqual(ExtractionRunStatus.DRAFT_READY, retry.status)
 
     def test_schema_failure_is_persisted_without_a_draft_output(self) -> None:
         document_id = self._import_resume()
@@ -228,6 +271,31 @@ class CareerExtractionTestCase(unittest.TestCase):
                 idempotency_key="extraction-schema-failed-1",
                 context=self.context,
             )
+
+        row = self.database.fetch_all(
+            "SELECT id FROM llm_extraction_runs WHERE document_id = ?",
+            (document_id,),
+        )[0]
+        run = self.store.get_extraction_run(run_id=str(row["id"]))
+        self.assertEqual(ExtractionRunStatus.DRAFT_FAILED, run.status)
+        self.assertIsNone(run.output_ref)
+        self.assertIsNotNone(run.error_summary)
+        self.assertEqual([], self.database.fetch_all("SELECT id FROM experiences"))
+
+    def test_provider_parse_failure_is_persisted_without_a_draft_output(self) -> None:
+        document_id = self._import_resume()
+
+        with patch.object(
+            self.provider,
+            "extract",
+            side_effect=JSONDecodeError("Malformed provider response", "{", 1),
+        ):
+            with self.assertRaises(JSONDecodeError):
+                self.service.execute(
+                    document_id=document_id,
+                    idempotency_key="extraction-parse-failed-1",
+                    context=self.context,
+                )
 
         row = self.database.fetch_all(
             "SELECT id FROM llm_extraction_runs WHERE document_id = ?",

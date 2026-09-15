@@ -471,32 +471,10 @@ class SQLiteCareerStore:
             )
         return run
 
-    def create_extraction_run(self, *, run: ExtractionRun) -> ExtractionRun:
-        """Append a standalone draft-extracting run without replacing earlier rows."""
-        _require_run_storage_consistency(run)
-        if run.status is not ExtractionRunStatus.DRAFT_EXTRACTING:
-            raise ValidationError(
-                "A new extraction run must begin in draft_extracting status.",
-                details={"run_id": run.id, "status": run.status.value},
-            )
-        with self._database.transaction(immediate=True) as connection:
-            self._load_resume_document(connection, run.document_id)
-            self._insert_extraction_run(connection, run)
-        return run
-
     def get_extraction_run(self, *, run_id: str) -> ExtractionRun:
         """Load one append-only extraction run."""
         with self._database.connect() as connection:
             return self._load_extraction_run(connection, _require_identifier(run_id, "run_id"))
-
-    def update_extraction_run_status(self, *, run: ExtractionRun) -> ExtractionRun:
-        """Persist an explicitly valid extraction-run state-machine transition."""
-        _require_run_storage_consistency(run)
-        with self._database.transaction(immediate=True) as connection:
-            before = self._load_extraction_run(connection, run.id)
-            self._require_valid_extraction_run_transition(before=before, after=run)
-            self._write_extraction_run(connection, run=run, previous_status=before.status)
-        return run
 
     def create_skill(self, *, skill: Skill) -> Skill:
         """Persist a skill, explicitly mapping legacy ``None`` taxonomy values to ``''``."""
@@ -660,7 +638,10 @@ class SQLiteCareerStore:
             expected = (
                 before.return_to_draft()
                 if before.status is ExtractionRunStatus.UNDER_REVIEW
-                else before.mark_draft_ready(output_ref=after.output_ref or "")
+                else before.mark_draft_ready(
+                    output_ref=after.output_ref or "",
+                    completed_at=after.completed_at,
+                )
             )
         elif after.status is ExtractionRunStatus.DRAFT_FAILED:
             expected = before.mark_draft_failed(
@@ -688,12 +669,7 @@ class SQLiteCareerStore:
                 "Extraction run status is unsupported.",
                 details={"run_id": after.id, "status": after.status.value},
             )
-        if expected != after:
-            raise ValidationError(
-                "Extraction run transition changed immutable fields or inconsistent "
-                "terminal fields.",
-                details={"run_id": after.id},
-            )
+        _require_same_extraction_run_mutable_state(expected, after)
 
     def _peek_idempotency_record(
         self,
@@ -820,6 +796,26 @@ class SQLiteCareerStore:
         if row is None:
             raise NotFoundError("extraction_run", run_id)
         return _row_to_extraction_run(row)
+
+
+def _require_same_extraction_run_mutable_state(
+    expected: ExtractionRun,
+    actual: ExtractionRun,
+) -> None:
+    """Ensure a legal transition changes only the fields owned by the state machine."""
+    mutable = (
+        "status",
+        "output_ref",
+        "error_summary",
+        "completed_at",
+        "published_profile_version_id",
+    )
+    changed = [field for field in mutable if getattr(expected, field) != getattr(actual, field)]
+    if changed:
+        raise ValidationError(
+            "Extraction run transition has inconsistent state-machine fields.",
+            details={"run_id": actual.id, "fields": changed},
+        )
 
 
 def _row_to_resume_document(row: sqlite3.Row) -> ResumeDocument:
@@ -962,7 +958,9 @@ def _require_run_storage_consistency(run: ExtractionRun) -> None:
         ExtractionRunStatus.PROFILE_VERSION_PUBLISHED,
     }
     completed_required = status in {
+        ExtractionRunStatus.DRAFT_READY,
         ExtractionRunStatus.DRAFT_FAILED,
+        ExtractionRunStatus.UNDER_REVIEW,
         ExtractionRunStatus.PROFILE_VERSION_PUBLISHED,
     }
     error_required = status is ExtractionRunStatus.DRAFT_FAILED

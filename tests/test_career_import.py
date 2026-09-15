@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from job_search_assistant.app_services import ImportResumeDocument, build_foundation
 from job_search_assistant.career import DocumentStatus, ResumeDocument, Skill
-from job_search_assistant.core import ConflictError, InfrastructureError, RequestContext
+from job_search_assistant.core import ConflictError, InfrastructureError, RequestContext, ValidationError
 from job_search_assistant.infrastructure.files import (
     FileSystemDocumentStorage,
     PlainTextResumeExtractor,
@@ -120,6 +120,21 @@ class CareerImportTestCase(unittest.TestCase):
         replay = self.service.execute(**request)
 
         self.assertEqual(first, replay)
+
+    def test_directory_file_reference_is_rejected_before_creating_an_import(self) -> None:
+        source_directory = self.workspace / "incoming" / "not-a-resume"
+        source_directory.mkdir(parents=True)
+
+        with self.assertRaises(ValidationError) as raised:
+            self.service.execute(
+                file_ref=source_directory,
+                metadata={"mime_type": "text/plain"},
+                idempotency_key="import-directory-source-1",
+                context=self.context,
+            )
+
+        self.assertEqual("validation_error", raised.exception.code)
+        self.assertEqual([], self.database.fetch_all("SELECT id FROM resume_documents"))
 
     def test_in_progress_replay_reuses_its_existing_document(self) -> None:
         source = self._write_source("resume.txt", "Ada Lovelace\n")

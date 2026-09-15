@@ -304,7 +304,12 @@ class StartExtractionRun:
         idempotency_record_id: str,
         context: RequestContext,
     ) -> StartExtractionRunResult:
-        """Call the provider outside transactions and durably record either outcome."""
+        """Persist only extraction, validation, or parse failures as draft failures.
+
+        Infrastructure faults deliberately escape this method with the durable
+        run and idempotency checkpoint still in progress, so the same key can
+        retry after the underlying dependency has recovered.
+        """
         try:
             payload = self.extraction_provider.extract(extracted_text=extracted_text, run=run)
             draft = validate_extraction_draft(
@@ -313,8 +318,16 @@ class StartExtractionRun:
             )
             _require_draft_locators(draft)
             output_ref = self.storage.store_extraction_draft(draft=_draft_to_payload(draft))
-            completed = run.mark_draft_ready(output_ref=output_ref)
-        except Exception as exc:
+            completed = run.mark_draft_ready(
+                output_ref=output_ref,
+                completed_at=datetime.now(UTC),
+            )
+        except (
+            ResumeTextExtractionError,
+            UnicodeError,
+            ValidationError,
+            json.JSONDecodeError,
+        ) as exc:
             failed = run.mark_draft_failed(
                 error_summary=_extraction_error_summary(exc),
                 completed_at=datetime.now(UTC),
@@ -326,10 +339,7 @@ class StartExtractionRun:
             )
             if isinstance(exc, ApplicationError):
                 raise exc.with_correlation_id(context.correlation_id)
-            raise InfrastructureError(
-                "Career extraction did not complete.",
-                details={"run_id": run.id},
-            ).with_correlation_id(context.correlation_id) from exc
+            raise
         persisted = self.store.finalize_extraction_run(
             run=completed,
             idempotency_record_id=idempotency_record_id,
@@ -347,6 +357,11 @@ def _source_path(file_ref: Path | str) -> Path:
         raise ValidationError(
             "file_ref must be a non-blank local file path.",
             details={"field": "file_ref"},
+        )
+    if path.exists() and path.is_dir():
+        raise ValidationError(
+            "file_ref must point to a file, not a directory.",
+            details={"field": "file_ref", "file_ref": str(path)},
         )
     return path
 

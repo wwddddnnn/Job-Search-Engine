@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any, Mapping
 
 from job_search_assistant.career.types import ExtractionRun
-from job_search_assistant.core.errors import InfrastructureError, ValidationError
+from job_search_assistant.core.errors import ValidationError
 
 
 class DeterministicCareerExtractionProvider:
@@ -14,8 +14,8 @@ class DeterministicCareerExtractionProvider:
 
     A caller must explicitly configure ``payload``.  Leaving it unset models
     the production default before a real LLM adapter exists and raises a
-    structured infrastructure error instead of pretending extraction succeeded
-    with an empty result.
+    structured configuration validation error instead of pretending extraction
+    succeeded with an empty result.
     """
 
     model = "deterministic-career-extraction-v1"
@@ -36,7 +36,7 @@ class DeterministicCareerExtractionProvider:
                 details={"field": "extracted_text"},
             )
         if self._payload is None:
-            raise InfrastructureError(
+            raise ValidationError(
                 "Career extraction provider is not configured.",
                 details={"provider": "career_extraction"},
             )

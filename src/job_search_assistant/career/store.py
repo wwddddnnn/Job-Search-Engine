@@ -132,14 +132,8 @@ class CareerStore(Protocol):
     def create_skill(self, *, skill: Skill) -> Skill:
         """Persist a normalized skill using ``''`` for a missing taxonomy reference."""
 
-    def create_extraction_run(self, *, run: ExtractionRun) -> ExtractionRun:
-        """Append a new extraction run instead of overwriting prior output."""
-
     def get_extraction_run(self, *, run_id: str) -> ExtractionRun:
         """Return one extraction run."""
-
-    def update_extraction_run_status(self, *, run: ExtractionRun) -> ExtractionRun:
-        """Persist a valid extraction-run state-machine transition."""
 
     def create_career_profile(self, *, profile: CareerProfile) -> CareerProfile:
         """Persist a stable profile identity."""
