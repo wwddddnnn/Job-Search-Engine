@@ -132,8 +132,19 @@ if [ ! -f "$LOG_FILE" ]; then
   } > "$LOG_FILE"
 fi
 
-WORKDIR="$(mktemp -d)"
-cleanup() { rm -rf "$WORKDIR"; }
+# 本轮所有临时产物都留在项目内（.gitignore 已忽略 .job-search-assistant/），
+# 不在项目外创建目录：任务描述、diff、审查输出、测试输出都落在这里。
+RUNS_DIR="$REPO_ROOT/.job-search-assistant/loop-runs"
+mkdir -p "$RUNS_DIR"
+WORKDIR="$(mktemp -d "$RUNS_DIR/$(date '+%Y%m%d-%H%M%S')-XXXXXX")"
+KEEP_RUNS="${KEEP_RUNS:-0}"
+cleanup() {
+  if [ "$KEEP_RUNS" = "1" ]; then
+    say "KEEP_RUNS=1：本轮中间产物保留在 $WORKDIR"
+  else
+    rm -rf "$WORKDIR"
+  fi
+}
 trap cleanup EXIT
 
 printf '%s\n' "$TASK" > "$WORKDIR/task.txt"

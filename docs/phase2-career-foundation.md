@@ -157,7 +157,9 @@ PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/
 - **B 步**：接入真实 LLM provider（用户已确认在 Phase 2 完成后进行）。
 - **Phase 3**：Job Matching。
 
-## 待确认的设计决策
+## 已确认的设计决策
 
-1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。若希望严格照 §6.4 的实体命名单列表，请提出。
-2. **受控文件存储位置**默认 `.job-search-assistant/documents/`（可用参数覆盖）。
+1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。
+2. **受控文件存储位置**：`.job-search-assistant/documents/<content_hash>`（与 Phase 1 数据库同根目录，可用参数覆盖）。
+3. **本阶段不含 UI**（核验界面 → Phase 2.5）与**不含真实 LLM provider**（→ Phase 2 完成后的 B 步）。两者均由用户确认，不属于本阶段缺口。
+
