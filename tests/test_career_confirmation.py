@@ -20,13 +20,19 @@ from job_search_assistant.career import (
     EXTRACTION_DRAFT_SCHEMA_VERSION,
     CareerProfile,
     Experience,
+    ExperienceAchievement,
     ExperienceFactConfirmation,
     ExperienceSkill,
     ProfileVersion,
     Skill,
     VerificationStatus,
 )
-from job_search_assistant.core import InvalidStateError, RequestContext, ValidationError
+from job_search_assistant.core import (
+    ConflictError,
+    InvalidStateError,
+    RequestContext,
+    ValidationError,
+)
 from job_search_assistant.infrastructure.files import (
     DeterministicCareerExtractionProvider,
     FileSystemDocumentStorage,
@@ -225,6 +231,71 @@ class CareerConfirmationTestCase(unittest.TestCase):
 
                 self.assertEqual(status.value, raised.exception.details["verification_status"])
 
+    def test_published_versions_reject_unverified_achievement_rows(self) -> None:
+        profile_version = ProfileVersion.initial(
+            id="achievement-draft-profile-version",
+            profile_id=self.profile.id,
+            created_at=datetime.now(UTC),
+        )
+        experience = Experience(
+            id="achievement-draft-experience",
+            profile_version_id=profile_version.id,
+            organization="Verified Company",
+            role="Verified Role",
+            verification_status=VerificationStatus.VERIFIED,
+            created_at=datetime.now(UTC),
+        )
+        achievement = ExperienceAchievement(
+            id="achievement-draft",
+            experience_id=experience.id,
+            action_text="Draft achievement",
+            verification_status=VerificationStatus.DRAFT,
+            created_at=datetime.now(UTC),
+        )
+
+        with self.assertRaises(ValidationError) as raised:
+            self.store.publish_profile_version(
+                profile=self.profile,
+                profile_version=profile_version,
+                experiences=(experience,),
+                achievements=(achievement,),
+                skills=(),
+                experience_skills=(),
+                evidence=(),
+            )
+
+        self.assertEqual("draft", raised.exception.details["verification_status"])
+
+    def test_publishing_another_profiles_version_is_rejected(self) -> None:
+        now = datetime.now(UTC)
+        other_profile = self.store.create_career_profile(
+            profile=CareerProfile(
+                id="profile-2",
+                owner_id="user-1",
+                display_name="Grace Hopper",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        profile_version = ProfileVersion.initial(
+            id="profile-1-version-1",
+            profile_id=self.profile.id,
+            created_at=now,
+        )
+
+        with self.assertRaises(ConflictError) as raised:
+            self.store.publish_profile_version(
+                profile=other_profile,
+                profile_version=profile_version,
+                experiences=(),
+                achievements=(),
+                skills=(),
+                experience_skills=(),
+                evidence=(),
+            )
+
+        self.assertEqual(other_profile.id, raised.exception.details["profile_id"])
+
     def test_same_confirmation_key_replays_the_same_published_version_without_draft_io(
         self,
     ) -> None:
@@ -255,6 +326,47 @@ class CareerConfirmationTestCase(unittest.TestCase):
                 )
             ),
         )
+
+    def test_empty_or_duplicate_confirmations_are_rejected(self) -> None:
+        run_id = self._ready_run()
+
+        with self.assertRaises(ValidationError) as empty:
+            self.confirmation_service.execute(
+                profile_id=self.profile.id,
+                extraction_run_id=run_id,
+                confirmations=(),
+                idempotency_key="confirm-empty-1",
+                context=self.context,
+            )
+        self.assertEqual("confirmations", empty.exception.details["field"])
+
+        with self.assertRaises(ValidationError) as duplicate:
+            self.confirmation_service.execute(
+                profile_id=self.profile.id,
+                extraction_run_id=run_id,
+                confirmations=(ExperienceFactConfirmation(0), ExperienceFactConfirmation(0)),
+                idempotency_key="confirm-duplicate-1",
+                context=self.context,
+            )
+        self.assertEqual("confirmations", duplicate.exception.details["field"])
+
+    def test_out_of_range_confirmation_indexes_are_rejected(self) -> None:
+        cases = (
+            (ExperienceFactConfirmation(99), "experience_index"),
+            (ExperienceFactConfirmation(0, achievement_indexes=(99,)), "achievement_index"),
+            (ExperienceFactConfirmation(0, skill_indexes=(99,)), "skill_index"),
+        )
+        for number, (confirmation, field) in enumerate(cases):
+            with self.subTest(field=field):
+                with self.assertRaises(ValidationError) as raised:
+                    self.confirmation_service.execute(
+                        profile_id=self.profile.id,
+                        extraction_run_id=self._ready_run(),
+                        confirmations=(confirmation,),
+                        idempotency_key=f"confirm-out-of-range-{number}",
+                        context=self.context,
+                    )
+                self.assertIn(field, raised.exception.details)
 
     def test_published_history_is_not_rewritten_and_illegal_transition_is_rejected(self) -> None:
         first_run = self._ready_run()

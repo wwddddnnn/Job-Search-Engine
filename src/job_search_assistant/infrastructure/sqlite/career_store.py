@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from job_search_assistant.career.store import (
     ExperienceConfirmationReservation,
     ExtractionRunReservation,
+    ProfileVersionFacts,
     ResumeImportReservation,
 )
 from job_search_assistant.career.types import (
@@ -572,7 +573,12 @@ class SQLiteCareerStore:
             return self._load_extraction_run(connection, _require_identifier(run_id, "run_id"))
 
     def create_career_profile(self, *, profile: CareerProfile) -> CareerProfile:
-        """Persist a profile identity before its first immutable version exists."""
+        """Persist a profile identity before its first immutable version exists.
+
+        This is only for an upper-layer profile-creation command or tests.
+        Adapters and UI code must not call this unaudited, non-idempotent
+        persistence primitive directly.
+        """
         if profile.current_version_id is not None:
             raise ValidationError(
                 "A newly created career profile cannot already point to a version.",
@@ -620,6 +626,160 @@ class SQLiteCareerStore:
                 _require_identifier(profile_version_id, "profile_version_id"),
             )
 
+    def get_profile_version_facts(
+        self,
+        *,
+        profile_version_id: str,
+    ) -> ProfileVersionFacts:
+        """Load one complete profile-version fact graph without writes or audit events."""
+        normalized_version_id = _require_identifier(profile_version_id, "profile_version_id")
+        with self._database.connect() as connection:
+            profile_version = self._load_profile_version(connection, normalized_version_id)
+            experiences = tuple(
+                Experience(
+                    id=str(row["id"]),
+                    profile_version_id=str(row["profile_version_id"]),
+                    organization=str(row["organization"]),
+                    role=str(row["role"]),
+                    date_range=_optional_text(row["date_range"]),
+                    summary=_optional_text(row["summary"]),
+                    verification_status=str(row["verification_status"]),
+                    created_at=_parse_datetime(row["created_at"], "experience.created_at"),
+                )
+                for row in connection.execute(
+                    """
+                    SELECT id, profile_version_id, organization, role, date_range, summary,
+                           verification_status, created_at
+                    FROM experiences
+                    WHERE profile_version_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (profile_version.id,),
+                ).fetchall()
+            )
+            achievements = tuple(
+                ExperienceAchievement(
+                    id=str(row["id"]),
+                    experience_id=str(row["experience_id"]),
+                    action_text=str(row["action_text"]),
+                    outcome_text=_optional_text(row["outcome_text"]),
+                    metric_value=row["metric_value"],
+                    metric_unit=_optional_text(row["metric_unit"]),
+                    metric_source_document_id=_optional_text(row["metric_source_document_id"]),
+                    metric_user_confirmed_at=(
+                        None
+                        if row["metric_user_confirmed_at"] is None
+                        else _parse_datetime(
+                            row["metric_user_confirmed_at"],
+                            "experience_achievement.metric_user_confirmed_at",
+                        )
+                    ),
+                    verification_status=str(row["verification_status"]),
+                    created_at=_parse_datetime(
+                        row["created_at"],
+                        "experience_achievement.created_at",
+                    ),
+                )
+                for row in connection.execute(
+                    """
+                    SELECT id, experience_id, action_text, outcome_text, metric_value, metric_unit,
+                           metric_source_document_id, metric_user_confirmed_at, verification_status,
+                           created_at
+                    FROM experience_achievements
+                    WHERE experience_id IN (
+                        SELECT id FROM experiences WHERE profile_version_id = ?
+                    )
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (profile_version.id,),
+                ).fetchall()
+            )
+            skill_rows = connection.execute(
+                """
+                SELECT es.id AS experience_skill_id, es.experience_id, es.skill_id,
+                       es.raw_skill_name, es.proficiency,
+                       es.verification_status AS association_verification_status,
+                       es.created_at AS association_created_at,
+                       s.id AS skill_id, s.canonical_name, s.taxonomy_ref,
+                       s.created_at AS skill_created_at
+                FROM experience_skills AS es
+                JOIN skills AS s ON s.id = es.skill_id
+                WHERE es.experience_id IN (
+                    SELECT id FROM experiences WHERE profile_version_id = ?
+                )
+                ORDER BY es.created_at ASC, es.id ASC
+                """,
+                (profile_version.id,),
+            ).fetchall()
+            skills_by_id: dict[str, Skill] = {}
+            experience_skills: list[ExperienceSkill] = []
+            for row in skill_rows:
+                skill_id = str(row["skill_id"])
+                skills_by_id.setdefault(
+                    skill_id,
+                    Skill(
+                        id=skill_id,
+                        canonical_name=str(row["canonical_name"]),
+                        taxonomy_ref=str(row["taxonomy_ref"]),
+                        created_at=_parse_datetime(row["skill_created_at"], "skill.created_at"),
+                    ),
+                )
+                experience_skills.append(
+                    ExperienceSkill(
+                        id=str(row["experience_skill_id"]),
+                        experience_id=str(row["experience_id"]),
+                        skill_id=skill_id,
+                        raw_skill_name=str(row["raw_skill_name"]),
+                        proficiency=_optional_text(row["proficiency"]),
+                        verification_status=str(row["association_verification_status"]),
+                        created_at=_parse_datetime(
+                            row["association_created_at"],
+                            "experience_skill.created_at",
+                        ),
+                    )
+                )
+            evidence = tuple(
+                ExperienceEvidence(
+                    id=str(row["id"]),
+                    experience_id=str(row["experience_id"]),
+                    experience_achievement_id=_optional_text(row["experience_achievement_id"]),
+                    source_type=str(row["source_type"]),
+                    source_document_id=_optional_text(row["source_document_id"]),
+                    source_excerpt=_optional_text(row["source_excerpt"]),
+                    source_locator=_optional_text(row["source_locator"]),
+                    confidence=row["confidence"],
+                    verification_status=str(row["verification_status"]),
+                    user_verified=bool(row["user_verified"]),
+                    verified_at=(
+                        None
+                        if row["verified_at"] is None
+                        else _parse_datetime(row["verified_at"], "experience_evidence.verified_at")
+                    ),
+                    created_at=_parse_datetime(row["created_at"], "experience_evidence.created_at"),
+                )
+                for row in connection.execute(
+                    """
+                    SELECT id, experience_id, experience_achievement_id, source_type,
+                           source_document_id, source_excerpt, source_locator, confidence,
+                           verification_status, user_verified, verified_at, created_at
+                    FROM experience_evidence
+                    WHERE experience_id IN (
+                        SELECT id FROM experiences WHERE profile_version_id = ?
+                    )
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (profile_version.id,),
+                ).fetchall()
+            )
+        return ProfileVersionFacts(
+            profile_version=profile_version,
+            experiences=experiences,
+            achievements=achievements,
+            skills=tuple(skills_by_id.values()),
+            experience_skills=tuple(experience_skills),
+            evidence=evidence,
+        )
+
     def publish_profile_version(
         self,
         *,
@@ -639,6 +799,11 @@ class SQLiteCareerStore:
         idempotency key.  The guard remains here to protect the invariant for
         internal callers and direct repository tests.
         """
+        if profile_version.profile_id != profile.id:
+            raise ConflictError(
+                "A profile version belongs to a different career profile.",
+                details={"profile_id": profile.id, "profile_version_id": profile_version.id},
+            )
         require_verified_profile_facts(
             experiences=list(experiences),
             achievements=list(achievements),
@@ -772,6 +937,11 @@ class SQLiteCareerStore:
         context: RequestContext,
     ) -> ProfileVersion:
         """Atomically publish user-confirmed facts, audits, and replay response."""
+        if profile_version.profile_id != profile.id:
+            raise ConflictError(
+                "A profile version belongs to a different career profile.",
+                details={"profile_id": profile.id, "profile_version_id": profile_version.id},
+            )
         require_verified_profile_facts(
             experiences=list(experiences),
             achievements=list(achievements),

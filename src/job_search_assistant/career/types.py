@@ -399,7 +399,12 @@ class CareerProfile:
         previous_version: "ProfileVersion | None",
         updated_at: datetime | None = None,
     ) -> "CareerProfile":
-        """Advance the current pointer only to the next immutable profile version."""
+        """Advance the pointer only to this profile's next immutable version.
+
+        The explicit ``profile_version.profile_id == self.id`` check applies
+        to both initial and subsequent publication, so a version belonging to
+        another profile can never become this profile's current pointer.
+        """
         if profile_version.profile_id != self.id:
             raise ConflictError(
                 "A profile version belongs to a different career profile.",

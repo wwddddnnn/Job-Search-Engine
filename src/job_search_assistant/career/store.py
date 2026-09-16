@@ -54,6 +54,18 @@ class ExperienceConfirmationReservation:
     profile_version_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileVersionFacts:
+    """The immutable fact graph for one profile version, loaded read-only."""
+
+    profile_version: ProfileVersion
+    experiences: tuple[Experience, ...]
+    achievements: tuple[ExperienceAchievement, ...]
+    skills: tuple[Skill, ...]
+    experience_skills: tuple[ExperienceSkill, ...]
+    evidence: tuple[ExperienceEvidence, ...]
+
+
 class CareerStore(Protocol):
     """Transactional persistence boundary for Career application services."""
 
@@ -162,7 +174,12 @@ class CareerStore(Protocol):
         """Return one extraction run."""
 
     def create_career_profile(self, *, profile: CareerProfile) -> CareerProfile:
-        """Persist a stable profile identity."""
+        """Persist a stable profile identity for a creation command or tests only.
+
+        Adapter and UI code must not call this unaudited, non-idempotent
+        persistence primitive directly; an upper-layer profile-creation
+        command owns that responsibility.
+        """
 
     def get_career_profile(self, *, profile_id: str) -> CareerProfile:
         """Return one career profile."""
@@ -182,6 +199,13 @@ class CareerStore(Protocol):
 
     def get_profile_version(self, *, profile_version_id: str) -> ProfileVersion:
         """Return one immutable profile version."""
+
+    def get_profile_version_facts(
+        self,
+        *,
+        profile_version_id: str,
+    ) -> ProfileVersionFacts:
+        """Return one version's complete immutable fact graph without writing state."""
 
     def peek_experience_confirmation(
         self,

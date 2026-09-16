@@ -17,6 +17,7 @@ from job_search_assistant.app_services import (
 )
 from job_search_assistant.career import (
     EXTRACTION_DRAFT_SCHEMA_VERSION,
+    ExtractionParseError,
     ExtractionRunStatus,
 )
 from job_search_assistant.core import InfrastructureError, RequestContext, ValidationError
@@ -293,7 +294,7 @@ class CareerExtractionTestCase(unittest.TestCase):
             "extract",
             side_effect=JSONDecodeError("Malformed provider response", "{", 1),
         ):
-            with self.assertRaises(ValidationError) as raised:
+            with self.assertRaises(ExtractionParseError) as raised:
                 self.service.execute(
                     document_id=document_id,
                     idempotency_key="extraction-parse-failed-1",
@@ -301,6 +302,7 @@ class CareerExtractionTestCase(unittest.TestCase):
                 )
 
         self.assertEqual("extraction_parse_error", raised.exception.code)
+        self.assertNotIsInstance(raised.exception, ValidationError)
         self.assertEqual("career-extraction-correlation", raised.exception.correlation_id)
         self.assertEqual("invalid_json", raised.exception.details["reason"])
 

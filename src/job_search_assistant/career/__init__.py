@@ -22,6 +22,7 @@ from job_search_assistant.career.store import (
     CareerStore,
     ExperienceConfirmationReservation,
     ExtractionRunReservation,
+    ProfileVersionFacts,
     ResumeImportReservation,
 )
 from job_search_assistant.career.types import (
@@ -69,6 +70,7 @@ __all__ = [
     "ExtractionRunReservation",
     "ExtractionRunStatus",
     "ProfileVersion",
+    "ProfileVersionFacts",
     "ResumeDocument",
     "ResumeDocumentStatus",
     "ResumeImportReservation",

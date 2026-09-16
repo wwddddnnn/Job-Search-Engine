@@ -26,9 +26,11 @@ from job_search_assistant.career.ports import (
 from job_search_assistant.career.store import (
     CareerStore,
     ExtractionRunReservation,
+    ProfileVersionFacts,
     ResumeImportReservation,
 )
 from job_search_assistant.career.types import (
+    CareerProfile,
     DocumentStatus,
     EvidenceSourceType,
     Experience,
@@ -46,7 +48,12 @@ from job_search_assistant.career.types import (
     require_verified_profile_facts,
 )
 from job_search_assistant.core.context import RequestContext
-from job_search_assistant.core.errors import ApplicationError, InfrastructureError, ValidationError
+from job_search_assistant.core.errors import (
+    ApplicationError,
+    ConflictError,
+    InfrastructureError,
+    ValidationError,
+)
 from job_search_assistant.core.idempotency import IdempotencyReservationState
 
 
@@ -554,6 +561,336 @@ class ConfirmExperienceFacts:
             profile_version=persisted,
             extraction_run_id=run.id,
         )
+
+
+class NoVerifiedCareerFactsError(ApplicationError):
+    """A requested immutable version has no safely usable confirmed facts."""
+
+    def __init__(
+        self,
+        *,
+        profile_id: str,
+        profile_version_id: str | None,
+        reason: str = "no_verified_facts",
+    ) -> None:
+        super().__init__(
+            "no_verified_career_facts",
+            "The requested career profile version has no verified facts.",
+            {
+                "profile_id": profile_id,
+                "profile_version_id": profile_version_id,
+                "reason": reason,
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedEvidencePackItem:
+    """One verified fact/evidence projection safe to supply to downstream work."""
+
+    evidence_id: str
+    scope: str
+    verification_status: VerificationStatus
+    content: str
+    source_type: EvidenceSourceType
+    source_document_id: str | None
+    source_excerpt: str | None
+    source_locator: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedEvidencePack:
+    """A traceable, task-scoped projection of verified career facts only."""
+
+    profile_id: str
+    profile_version_id: str
+    version: int
+    task_context: str | None
+    items: tuple[VerifiedEvidencePackItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CareerAchievementSnapshot:
+    """Minimal confirmed achievement fields for a profile-view scenario."""
+
+    action_text: str
+    outcome_text: str | None
+    metric_value: float | None
+    metric_unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CareerSkillSnapshot:
+    """Minimal confirmed skill fields for a profile-view scenario."""
+
+    name: str
+    proficiency: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CareerExperienceSnapshot:
+    """Minimal confirmed experience fields without evidence-storage internals."""
+
+    organization: str
+    role: str
+    date_range: str | None
+    summary: str | None
+    achievements: tuple[CareerAchievementSnapshot, ...]
+    skills: tuple[CareerSkillSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CareerProfileSnapshot:
+    """Minimal read model of one immutable, verified career profile version."""
+
+    profile_id: str
+    profile_version_id: str
+    version: int
+    display_name: str
+    experiences: tuple[CareerExperienceSnapshot, ...]
+
+
+@dataclass(slots=True)
+class GetVerifiedEvidencePack:
+    """Return a read-only, traceable evidence pack for verified career facts.
+
+    The use case reloads the immutable fact graph and verifies every loaded
+    fact itself.  This protects downstream consumers even if data was inserted
+    outside the normal confirmation/store boundary.
+    """
+
+    store: CareerStore
+
+    def execute(
+        self,
+        *,
+        profile_id: str,
+        profile_version_id: str | None = None,
+        task_context: str | None = None,
+    ) -> VerifiedEvidencePack:
+        """Return verified facts with one or more evidence-bearing items each."""
+        profile, facts = _load_verified_profile_facts(
+            store=self.store,
+            profile_id=profile_id,
+            profile_version_id=profile_version_id,
+        )
+        if task_context is not None:
+            task_context = _require_identifier(task_context, "task_context")
+        items = _evidence_pack_items(facts=facts, profile_id=profile.id)
+        if not items:
+            raise NoVerifiedCareerFactsError(
+                profile_id=profile.id,
+                profile_version_id=facts.profile_version.id,
+            )
+        return VerifiedEvidencePack(
+            profile_id=profile.id,
+            profile_version_id=facts.profile_version.id,
+            version=facts.profile_version.version,
+            task_context=task_context,
+            items=items,
+        )
+
+
+@dataclass(slots=True)
+class GetCareerProfileSnapshot:
+    """Return the minimal, read-only profile projection for an approved version."""
+
+    store: CareerStore
+
+    def execute(
+        self,
+        *,
+        profile_id: str,
+        profile_version_id: str | None = None,
+    ) -> CareerProfileSnapshot:
+        """Return confirmed profile content without raw documents, storage refs, or audit data."""
+        profile, facts = _load_verified_profile_facts(
+            store=self.store,
+            profile_id=profile_id,
+            profile_version_id=profile_version_id,
+        )
+        achievements_by_experience: dict[str, list[ExperienceAchievement]] = {}
+        for achievement in facts.achievements:
+            achievements_by_experience.setdefault(achievement.experience_id, []).append(achievement)
+        skills_by_experience: dict[str, list[ExperienceSkill]] = {}
+        for skill in facts.experience_skills:
+            skills_by_experience.setdefault(skill.experience_id, []).append(skill)
+        return CareerProfileSnapshot(
+            profile_id=profile.id,
+            profile_version_id=facts.profile_version.id,
+            version=facts.profile_version.version,
+            display_name=profile.display_name,
+            experiences=tuple(
+                CareerExperienceSnapshot(
+                    organization=experience.organization,
+                    role=experience.role,
+                    date_range=experience.date_range,
+                    summary=experience.summary,
+                    achievements=tuple(
+                        CareerAchievementSnapshot(
+                            action_text=achievement.action_text,
+                            outcome_text=achievement.outcome_text,
+                            metric_value=achievement.metric_value,
+                            metric_unit=achievement.metric_unit,
+                        )
+                        for achievement in achievements_by_experience.get(experience.id, ())
+                    ),
+                    skills=tuple(
+                        CareerSkillSnapshot(
+                            name=skill.raw_skill_name,
+                            proficiency=skill.proficiency,
+                        )
+                        for skill in skills_by_experience.get(experience.id, ())
+                    ),
+                )
+                for experience in facts.experiences
+            ),
+        )
+
+
+def _load_verified_profile_facts(
+    *,
+    store: CareerStore,
+    profile_id: str,
+    profile_version_id: str | None,
+) -> tuple[CareerProfile, ProfileVersionFacts]:
+    """Resolve one profile version and reject any non-verified persisted fact."""
+    normalized_profile_id = _require_identifier(profile_id, "profile_id")
+    profile = store.get_career_profile(profile_id=normalized_profile_id)
+    if profile_version_id is None:
+        resolved_version_id = profile.current_version_id
+        if resolved_version_id is None:
+            raise NoVerifiedCareerFactsError(
+                profile_id=profile.id,
+                profile_version_id=None,
+            )
+    else:
+        resolved_version_id = _require_identifier(profile_version_id, "profile_version_id")
+    facts = store.get_profile_version_facts(profile_version_id=resolved_version_id)
+    if facts.profile_version.profile_id != profile.id:
+        raise ConflictError(
+            "The requested profile version belongs to a different career profile.",
+            details={
+                "profile_id": profile.id,
+                "profile_version_id": facts.profile_version.id,
+            },
+        )
+    require_verified_profile_facts(
+        experiences=facts.experiences,
+        achievements=facts.achievements,
+        experience_skills=facts.experience_skills,
+        evidence=facts.evidence,
+    )
+    if not facts.experiences:
+        raise NoVerifiedCareerFactsError(
+            profile_id=profile.id,
+            profile_version_id=facts.profile_version.id,
+        )
+    return profile, facts
+
+
+def _evidence_pack_items(
+    *,
+    facts: ProfileVersionFacts,
+    profile_id: str,
+) -> tuple[VerifiedEvidencePackItem, ...]:
+    """Associate every returned fact with verified evidence and a stable scope."""
+    general_evidence_by_experience: dict[str, list[ExperienceEvidence]] = {}
+    achievement_evidence_by_id: dict[str, list[ExperienceEvidence]] = {}
+    for evidence in facts.evidence:
+        if evidence.experience_achievement_id is None:
+            general_evidence_by_experience.setdefault(evidence.experience_id, []).append(evidence)
+        else:
+            achievement_evidence_by_id.setdefault(
+                evidence.experience_achievement_id,
+                [],
+            ).append(evidence)
+
+    items: list[VerifiedEvidencePackItem] = []
+    for experience in facts.experiences:
+        evidence = general_evidence_by_experience.get(experience.id, ())
+        _require_pack_evidence(
+            evidence=evidence,
+            profile_id=profile_id,
+            profile_version_id=facts.profile_version.id,
+            scope="experience",
+        )
+        items.extend(
+            _pack_items_for_evidence(
+                evidence=evidence,
+                scope="experience",
+                content=f"{experience.organization}: {experience.role}",
+            )
+        )
+
+    for achievement in facts.achievements:
+        evidence = achievement_evidence_by_id.get(achievement.id, ())
+        _require_pack_evidence(
+            evidence=evidence,
+            profile_id=profile_id,
+            profile_version_id=facts.profile_version.id,
+            scope="achievement",
+        )
+        items.extend(
+            _pack_items_for_evidence(
+                evidence=evidence,
+                scope="achievement",
+                content=achievement.action_text,
+            )
+        )
+
+    for skill in facts.experience_skills:
+        evidence = general_evidence_by_experience.get(skill.experience_id, ())
+        _require_pack_evidence(
+            evidence=evidence,
+            profile_id=profile_id,
+            profile_version_id=facts.profile_version.id,
+            scope="skill",
+        )
+        items.extend(
+            _pack_items_for_evidence(
+                evidence=evidence,
+                scope="skill",
+                content=skill.raw_skill_name,
+            )
+        )
+    return tuple(items)
+
+
+def _require_pack_evidence(
+    *,
+    evidence: Sequence[ExperienceEvidence],
+    profile_id: str,
+    profile_version_id: str,
+    scope: str,
+) -> None:
+    if not evidence:
+        raise NoVerifiedCareerFactsError(
+            profile_id=profile_id,
+            profile_version_id=profile_version_id,
+            reason=f"missing_{scope}_evidence",
+        )
+
+
+def _pack_items_for_evidence(
+    *,
+    evidence: Sequence[ExperienceEvidence],
+    scope: str,
+    content: str,
+) -> tuple[VerifiedEvidencePackItem, ...]:
+    return tuple(
+        VerifiedEvidencePackItem(
+            evidence_id=item.id,
+            scope=scope,
+            verification_status=item.verification_status,
+            content=content,
+            source_type=item.source_type,
+            source_document_id=item.source_document_id,
+            source_excerpt=item.source_excerpt,
+            source_locator=item.source_locator,
+        )
+        for item in evidence
+    )
 
 
 @dataclass(frozen=True, slots=True)
