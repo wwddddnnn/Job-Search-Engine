@@ -209,6 +209,19 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 4 | 测试缺口：空 confirmations、重复 `experience_index`、越界索引（experience/achievement/skill）、achievement 带 draft 被拒——均只有代码覆盖、无断言；同 key 并发（第二个请求在 finalize 时看到 COMPLETED）抛 `InfrastructureError` 而非重放——单进程本地场景可接受，记录备查 | S5 顺手补齐，或明确不补 |
 | 5 | 契约表里 `ConfirmExperienceFacts` 输入含「draft changes」（用户编辑值），本轮只支持 accept + 子项勾选 | 已在切片表处注明归 Phase 2.5，本轮不再当缺口 |
 
+## Phase 2.5 / Phase 3 观察清单（来自 S5 审查）
+
+Phase 2 内不处理，但下游开工前应知道：
+
+| # | 观察 | 何时必须处理 |
+|---|---|---|
+| a | skill 项复用 experience 级 evidence：0004 的 `experience_evidence` 只有 `experience_id` / `experience_achievement_id`，**没有 evidence↔skill 关联**，因此同一 evidence 会以 experience 与 skill 两个 scope 重复出现，且无法证明该证据真的支持某个具体技能 | Phase 3/4 需要更细粒度 claim→evidence 时**需新增迁移** |
+| b | pack item 只带 `evidence_id`，**没有回指事实**（experience/achievement/skill 的 id）。下游要建 claim→fact 映射只能靠 scope+content 字符串；两条同 organization/role 的经历会歧义 | Pack 的下游消费者出现前 |
+| c | 「绕 store 防护」测试只覆盖 experience 的 draft；draft 的 achievement、skill 关联、evidence 行未做绕插断言（实现层已由 `require_verified_profile_facts` 兜住） | 补 1–2 条断言防回归即可 |
+| d | `task_context` 走 `_require_identifier` 校验，测试只用了 `"job-matching"`。若该校验对空白/非标识符字符严格，自由文本上下文（如 `"senior backend match #12"`）可能被误拒 | 确认语义，或改宽松文本校验 |
+| e | snapshot 对「合法但空的已发布版本」抛 `no_verified_career_facts`（与 pack 同口径）。「空但合法」与「非法」是否需要区分 | Phase 2.5 核验 UI 定义错误文案时 |
+| f | 「最小化」断言是 `repr(asdict(snapshot))` 不含若干字段名，而非对真实路径/JSON 内容断言；因返回类型本身不含这些字段，实际风险为零 | 无需处理 |
+
 ## 已确认的设计决策
 
 1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。
