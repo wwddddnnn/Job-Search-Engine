@@ -45,6 +45,15 @@ class ExtractionRunReservation:
     run: ExtractionRun
 
 
+@dataclass(frozen=True, slots=True)
+class ExperienceConfirmationReservation:
+    """The durable confirmation command checkpoint for one profile publication."""
+
+    state: IdempotencyReservationState
+    idempotency_record_id: str
+    profile_version_id: str | None = None
+
+
 class CareerStore(Protocol):
     """Transactional persistence boundary for Career application services."""
 
@@ -133,14 +142,17 @@ class CareerStore(Protocol):
         self,
         *,
         run: ExtractionRun,
+        idempotency_key: str,
+        request: Mapping[str, Any],
         context: RequestContext,
     ) -> ExtractionRun:
-        """Persist a legal review-state transition without consuming a start key.
+        """Persist an idempotent review transition owned by an application command.
 
-        This is deliberately separate from :meth:`finalize_extraction_run`:
-        the StartExtractionRun idempotency record has already completed once a
-        draft is ready, while review-state transitions need their own
-        command-level idempotency policy in the later confirmation slice.
+        ``ConfirmExperienceFacts`` is the current caller.  Adapters and UI
+        code must never call this persistence primitive directly: they must
+        supply an application command carrying its own scope/key and actor.
+        The implementation uses the confirmation command's idempotency scope
+        and key to prevent an unaudited, replay-unsafe state-write path.
         """
 
     def create_skill(self, *, skill: Skill) -> Skill:
@@ -170,3 +182,41 @@ class CareerStore(Protocol):
 
     def get_profile_version(self, *, profile_version_id: str) -> ProfileVersion:
         """Return one immutable profile version."""
+
+    def peek_experience_confirmation(
+        self,
+        *,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExperienceConfirmationReservation | None:
+        """Read a confirmation replay checkpoint before loading its draft artifact."""
+
+    def reserve_experience_confirmation(
+        self,
+        *,
+        profile_id: str,
+        extraction_run_id: str,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExperienceConfirmationReservation:
+        """Reserve the idempotent confirmation command before the final transaction."""
+
+    def finalize_experience_confirmation(
+        self,
+        *,
+        profile: CareerProfile,
+        profile_version: ProfileVersion,
+        run: ExtractionRun,
+        experiences: Sequence[Experience],
+        achievements: Sequence[ExperienceAchievement],
+        skills: Sequence[Skill],
+        experience_skills: Sequence[ExperienceSkill],
+        evidence: Sequence[ExperienceEvidence],
+        idempotency_record_id: str,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ProfileVersion:
+        """Atomically publish confirmed facts, audit before/after, and complete replay."""

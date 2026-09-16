@@ -8,7 +8,7 @@ from hashlib import sha256
 import json
 import mimetypes
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 from job_search_assistant.career.extraction import (
@@ -19,6 +19,7 @@ from job_search_assistant.career.extraction import (
 from job_search_assistant.career.ports import (
     CareerExtractionPort,
     DocumentStoragePort,
+    ExtractionParseError,
     ResumeTextExtractionError,
     ResumeTextExtractorPort,
 )
@@ -29,10 +30,20 @@ from job_search_assistant.career.store import (
 )
 from job_search_assistant.career.types import (
     DocumentStatus,
+    EvidenceSourceType,
+    Experience,
+    ExperienceAchievement,
+    ExperienceEvidence,
+    ExperienceFactConfirmation,
+    ExperienceSkill,
     ExtractionRun,
     ExtractionRunStatus,
+    ProfileVersion,
     ResumeDocument,
     ResumeText,
+    Skill,
+    VerificationStatus,
+    require_verified_profile_facts,
 )
 from job_search_assistant.core.context import RequestContext
 from job_search_assistant.core.errors import ApplicationError, InfrastructureError, ValidationError
@@ -323,7 +334,7 @@ class StartExtractionRun:
             )
             _require_draft_locators(draft)
         except json.JSONDecodeError as exc:
-            parse_error = ValidationError(
+            parse_error = ExtractionParseError(
                 "Career extraction provider returned malformed JSON.",
                 details={
                     "run_id": run.id,
@@ -372,6 +383,429 @@ class StartExtractionRun:
             context=context,
         )
         return StartExtractionRunResult.from_run(persisted)
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmExperienceFactsResult:
+    """Safe identifier and state for one published, immutable profile version."""
+
+    profile_id: str
+    profile_version_id: str
+    version: int
+    extraction_run_id: str
+
+    @classmethod
+    def from_profile_version(
+        cls,
+        *,
+        profile_version: ProfileVersion,
+        extraction_run_id: str,
+    ) -> "ConfirmExperienceFactsResult":
+        """Build the replayable command result without exposing raw draft content."""
+        return cls(
+            profile_id=profile_version.profile_id,
+            profile_version_id=profile_version.id,
+            version=profile_version.version,
+            extraction_run_id=extraction_run_id,
+        )
+
+
+@dataclass(slots=True)
+class ConfirmExperienceFacts:
+    """Publish only explicitly user-confirmed facts from one ready extraction draft.
+
+    The confirmation list is an allow-list, not a bulk-approval switch.  Each
+    selected experience becomes verified; achievements and skills require their
+    own explicit child-index selections.  All omitted draft candidates remain
+    in the immutable extraction artifact and are never copied into the new
+    ``ProfileVersion``.  The command owns the review transition, publication,
+    audit history, and idempotency key; adapters must not write those states
+    through the store directly.
+    """
+
+    store: CareerStore
+    storage: DocumentStoragePort
+
+    def execute(
+        self,
+        *,
+        profile_id: str,
+        extraction_run_id: str,
+        confirmations: Sequence[ExperienceFactConfirmation],
+        idempotency_key: str,
+        context: RequestContext | None = None,
+    ) -> ConfirmExperienceFactsResult:
+        """Confirm selected draft facts and append the next immutable profile version."""
+        request_context = context or RequestContext.create(source="career-confirmation")
+        normalized_profile_id = _require_identifier(profile_id, "profile_id")
+        normalized_run_id = _require_identifier(extraction_run_id, "extraction_run_id")
+        normalized_key = _require_identifier(idempotency_key, "idempotency_key")
+        normalized_confirmations = _normalize_confirmations(confirmations)
+        request = {
+            "profile_id": normalized_profile_id,
+            "extraction_run_id": normalized_run_id,
+            "confirmations": [
+                {
+                    "experience_index": item.experience_index,
+                    "achievement_indexes": list(item.achievement_indexes),
+                    "skill_indexes": list(item.skill_indexes),
+                }
+                for item in normalized_confirmations
+            ],
+        }
+
+        replay = self.store.peek_experience_confirmation(
+            idempotency_key=normalized_key,
+            request=request,
+            context=request_context,
+        )
+        if replay is not None and replay.state is IdempotencyReservationState.COMPLETED:
+            profile_version = self.store.get_profile_version(
+                profile_version_id=replay.profile_version_id or "",
+            )
+            return ConfirmExperienceFactsResult.from_profile_version(
+                profile_version=profile_version,
+                extraction_run_id=normalized_run_id,
+            )
+
+        run = self.store.get_extraction_run(run_id=normalized_run_id)
+        if run.status not in {ExtractionRunStatus.DRAFT_READY, ExtractionRunStatus.UNDER_REVIEW}:
+            raise ValidationError(
+                "Experience facts can only be confirmed from a ready draft under review.",
+                details={"run_id": run.id, "status": run.status.value},
+            ).with_correlation_id(request_context.correlation_id)
+        if run.output_ref is None:
+            raise InfrastructureError(
+                "A reviewable extraction run has no durable draft output.",
+                details={"run_id": run.id},
+            ).with_correlation_id(request_context.correlation_id)
+
+        draft = validate_extraction_draft(
+            self.storage.load_extraction_draft(output_ref=run.output_ref),
+            expected_schema_version=run.schema_version,
+        )
+        profile = self.store.get_career_profile(profile_id=normalized_profile_id)
+        previous_version = (
+            None
+            if profile.current_version_id is None
+            else self.store.get_profile_version(profile_version_id=profile.current_version_id)
+        )
+        published_at = datetime.now(UTC)
+        profile_version = (
+            ProfileVersion.initial(
+                id=str(uuid4()),
+                profile_id=profile.id,
+                source_summary=_confirmation_source_summary(run, normalized_confirmations),
+                created_at=published_at,
+            )
+            if previous_version is None
+            else ProfileVersion.next(
+                id=str(uuid4()),
+                previous_version=previous_version,
+                source_summary=_confirmation_source_summary(run, normalized_confirmations),
+                created_at=published_at,
+            )
+        )
+        facts = _confirmed_profile_facts(
+            profile_version=profile_version,
+            draft=draft,
+            document_id=run.document_id,
+            confirmations=normalized_confirmations,
+            confirmed_at=published_at,
+        )
+        require_verified_profile_facts(
+            experiences=facts.experiences,
+            achievements=facts.achievements,
+            experience_skills=facts.experience_skills,
+            evidence=facts.evidence,
+        )
+
+        reservation = self.store.reserve_experience_confirmation(
+            profile_id=profile.id,
+            extraction_run_id=run.id,
+            idempotency_key=normalized_key,
+            request=request,
+            context=request_context,
+        )
+        if reservation.state is IdempotencyReservationState.COMPLETED:
+            completed_version = self.store.get_profile_version(
+                profile_version_id=reservation.profile_version_id or "",
+            )
+            return ConfirmExperienceFactsResult.from_profile_version(
+                profile_version=completed_version,
+                extraction_run_id=run.id,
+            )
+
+        persisted = self.store.finalize_experience_confirmation(
+            profile=profile,
+            profile_version=profile_version,
+            run=run,
+            experiences=facts.experiences,
+            achievements=facts.achievements,
+            skills=facts.skills,
+            experience_skills=facts.experience_skills,
+            evidence=facts.evidence,
+            idempotency_record_id=reservation.idempotency_record_id,
+            idempotency_key=normalized_key,
+            request=request,
+            context=request_context,
+        )
+        return ConfirmExperienceFactsResult.from_profile_version(
+            profile_version=persisted,
+            extraction_run_id=run.id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfirmedProfileFacts:
+    """The fully verified fact graph prepared before a short SQLite transaction."""
+
+    experiences: list[Experience]
+    achievements: list[ExperienceAchievement]
+    skills: list[Skill]
+    experience_skills: list[ExperienceSkill]
+    evidence: list[ExperienceEvidence]
+
+
+def _normalize_confirmations(
+    confirmations: Sequence[ExperienceFactConfirmation],
+) -> tuple[ExperienceFactConfirmation, ...]:
+    if isinstance(confirmations, (str, bytes)) or not isinstance(confirmations, Sequence):
+        raise ValidationError(
+            "confirmations must be a sequence.",
+            details={"field": "confirmations"},
+        )
+    normalized = tuple(confirmations)
+    if not normalized:
+        raise ValidationError(
+            "At least one experience must be explicitly confirmed before publishing.",
+            details={"field": "confirmations"},
+        )
+    if any(not isinstance(item, ExperienceFactConfirmation) for item in normalized):
+        raise ValidationError(
+            "confirmations must contain ExperienceFactConfirmation values.",
+            details={"field": "confirmations"},
+        )
+    indexes = [item.experience_index for item in normalized]
+    if len(set(indexes)) != len(indexes):
+        raise ValidationError(
+            "Each draft experience can only be confirmed once per command.",
+            details={"field": "confirmations"},
+        )
+    return tuple(sorted(normalized, key=lambda item: item.experience_index))
+
+
+def _confirmation_source_summary(
+    run: ExtractionRun,
+    confirmations: Sequence[ExperienceFactConfirmation],
+) -> dict[str, Any]:
+    return {
+        "source": "user_confirmed_extraction_draft",
+        "extraction_run_id": run.id,
+        "resume_document_id": run.document_id,
+        "confirmed_experience_indexes": [item.experience_index for item in confirmations],
+    }
+
+
+def _confirmed_profile_facts(
+    *,
+    profile_version: ProfileVersion,
+    draft: ExtractionDraft,
+    document_id: str,
+    confirmations: Sequence[ExperienceFactConfirmation],
+    confirmed_at: datetime,
+) -> _ConfirmedProfileFacts:
+    """Copy only explicit draft selections into verified, document-backed facts."""
+    experiences: list[Experience] = []
+    achievements: list[ExperienceAchievement] = []
+    skills: list[Skill] = []
+    experience_skills: list[ExperienceSkill] = []
+    evidence: list[ExperienceEvidence] = []
+    skill_ids: dict[tuple[str, str], str] = {}
+
+    for confirmation in confirmations:
+        try:
+            draft_experience = draft.experiences[confirmation.experience_index]
+        except IndexError as exc:
+            raise ValidationError(
+                "A confirmation references an experience outside the extraction draft.",
+                details={"experience_index": confirmation.experience_index},
+            ) from exc
+        experience_id = str(uuid4())
+        experience = Experience(
+            id=experience_id,
+            profile_version_id=profile_version.id,
+            organization=draft_experience.organization,
+            role=draft_experience.role,
+            date_range=draft_experience.date_range,
+            summary=draft_experience.summary,
+            verification_status=VerificationStatus.VERIFIED,
+            created_at=confirmed_at,
+        )
+        experiences.append(experience)
+        evidence.extend(
+            _verified_document_evidence(
+                experience_id=experience.id,
+                document_id=document_id,
+                draft_evidence=draft_experience.evidence,
+                confirmed_at=confirmed_at,
+            )
+        )
+        evidence.append(
+            _user_confirmation_evidence(
+                experience_id=experience.id,
+                assertion_text=f"{experience.organization}: {experience.role}",
+                confirmed_at=confirmed_at,
+            )
+        )
+
+        for achievement_index in confirmation.achievement_indexes:
+            try:
+                draft_achievement = draft_experience.achievements[achievement_index]
+            except IndexError as exc:
+                raise ValidationError(
+                    "A confirmation references an achievement outside its draft experience.",
+                    details={
+                        "experience_index": confirmation.experience_index,
+                        "achievement_index": achievement_index,
+                    },
+                ) from exc
+            achievement_id = str(uuid4())
+            achievement = ExperienceAchievement(
+                id=achievement_id,
+                experience_id=experience.id,
+                action_text=draft_achievement.action_text,
+                outcome_text=draft_achievement.outcome_text,
+                metric_value=draft_achievement.metric_value,
+                metric_unit=draft_achievement.metric_unit,
+                metric_source_document_id=(
+                    document_id if draft_achievement.metric_value is not None else None
+                ),
+                verification_status=VerificationStatus.VERIFIED,
+                created_at=confirmed_at,
+            )
+            achievements.append(achievement)
+            evidence.extend(
+                _verified_document_evidence(
+                    experience_id=experience.id,
+                    experience_achievement_id=achievement.id,
+                    document_id=document_id,
+                    draft_evidence=draft_achievement.evidence,
+                    confirmed_at=confirmed_at,
+                )
+            )
+            evidence.append(
+                _user_confirmation_evidence(
+                    experience_id=experience.id,
+                    experience_achievement_id=achievement.id,
+                    assertion_text=achievement.action_text,
+                    confirmed_at=confirmed_at,
+                )
+            )
+
+        for skill_index in confirmation.skill_indexes:
+            try:
+                draft_skill = draft_experience.skills[skill_index]
+            except IndexError as exc:
+                raise ValidationError(
+                    "A confirmation references a skill outside its draft experience.",
+                    details={
+                        "experience_index": confirmation.experience_index,
+                        "skill_index": skill_index,
+                    },
+                ) from exc
+            canonical_name = draft_skill.canonical_name or draft_skill.raw_skill_name
+            skill_key = (canonical_name, "")
+            skill_id = skill_ids.get(skill_key)
+            if skill_id is None:
+                skill_id = str(uuid4())
+                skill_ids[skill_key] = skill_id
+                skills.append(
+                    Skill(
+                        id=skill_id,
+                        canonical_name=canonical_name,
+                        taxonomy_ref="",
+                        created_at=confirmed_at,
+                    )
+                )
+            experience_skills.append(
+                ExperienceSkill(
+                    id=str(uuid4()),
+                    experience_id=experience.id,
+                    skill_id=skill_id,
+                    raw_skill_name=draft_skill.raw_skill_name,
+                    proficiency=draft_skill.proficiency,
+                    verification_status=VerificationStatus.VERIFIED,
+                    created_at=confirmed_at,
+                )
+            )
+            evidence.extend(
+                _verified_document_evidence(
+                    experience_id=experience.id,
+                    document_id=document_id,
+                    draft_evidence=draft_skill.evidence,
+                    confirmed_at=confirmed_at,
+                )
+            )
+            evidence.append(
+                _user_confirmation_evidence(
+                    experience_id=experience.id,
+                    assertion_text=draft_skill.raw_skill_name,
+                    confirmed_at=confirmed_at,
+                )
+            )
+    return _ConfirmedProfileFacts(
+        experiences=experiences,
+        achievements=achievements,
+        skills=skills,
+        experience_skills=experience_skills,
+        evidence=evidence,
+    )
+
+
+def _verified_document_evidence(
+    *,
+    experience_id: str,
+    document_id: str,
+    draft_evidence: Sequence[Any],
+    confirmed_at: datetime,
+    experience_achievement_id: str | None = None,
+) -> list[ExperienceEvidence]:
+    return [
+        ExperienceEvidence(
+            id=str(uuid4()),
+            experience_id=experience_id,
+            experience_achievement_id=experience_achievement_id,
+            source_type=EvidenceSourceType.RESUME_DOCUMENT,
+            source_document_id=document_id,
+            source_excerpt=item.source_excerpt,
+            source_locator=item.source_locator,
+            confidence=item.confidence,
+            verification_status=VerificationStatus.VERIFIED,
+            user_verified=True,
+            verified_at=confirmed_at,
+            created_at=confirmed_at,
+        )
+        for item in draft_evidence
+    ]
+
+
+def _user_confirmation_evidence(
+    *,
+    experience_id: str,
+    assertion_text: str,
+    confirmed_at: datetime,
+    experience_achievement_id: str | None = None,
+) -> ExperienceEvidence:
+    """Record the affirmative user action without claiming it came from the resume."""
+    return ExperienceEvidence.user_assertion(
+        id=str(uuid4()),
+        experience_id=experience_id,
+        experience_achievement_id=experience_achievement_id,
+        assertion_text=assertion_text,
+        created_at=confirmed_at,
+        confirmed_at=confirmed_at,
+    )
 
 
 def _source_path(file_ref: Path | str) -> Path:

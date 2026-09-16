@@ -1,6 +1,8 @@
 """Application services that coordinate domain modules and infrastructure."""
 
 from job_search_assistant.app_services.career import (
+    ConfirmExperienceFacts,
+    ConfirmExperienceFactsResult,
     ImportResumeDocument,
     ImportResumeDocumentResult,
     StartExtractionRun,
@@ -11,6 +13,8 @@ from job_search_assistant.app_services.foundation import FoundationServices, bui
 
 __all__ = [
     "FoundationServices",
+    "ConfirmExperienceFacts",
+    "ConfirmExperienceFactsResult",
     "ImportResumeDocument",
     "ImportResumeDocumentResult",
     "StartExtractionRun",

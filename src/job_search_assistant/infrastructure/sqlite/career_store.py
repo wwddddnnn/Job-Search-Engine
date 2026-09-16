@@ -7,14 +7,25 @@ import json
 import sqlite3
 from typing import Any, Mapping, Sequence
 
-from job_search_assistant.career.store import ExtractionRunReservation, ResumeImportReservation
+from job_search_assistant.career.store import (
+    ExperienceConfirmationReservation,
+    ExtractionRunReservation,
+    ResumeImportReservation,
+)
 from job_search_assistant.career.types import (
+    CareerProfile,
     DocumentStatus,
+    Experience,
+    ExperienceAchievement,
+    ExperienceEvidence,
+    ExperienceSkill,
     ExtractionRun,
     ExtractionRunStatus,
+    ProfileVersion,
     ResumeDocument,
     ResumeText,
     Skill,
+    require_verified_profile_facts,
 )
 from job_search_assistant.core.audit import AuditEvent
 from job_search_assistant.core.context import RequestContext
@@ -37,6 +48,8 @@ from job_search_assistant.infrastructure.sqlite.idempotency_store import SQLiteI
 
 _IMPORT_RESUME_SCOPE = "career.resume_document.import"
 _START_EXTRACTION_SCOPE = "career.extraction_run.start"
+_CONFIRM_EXPERIENCE_FACTS_SCOPE = "career.experience_facts.confirm"
+_REVIEW_TRANSITION_SCOPE = "career.extraction_run.review_transition"
 
 
 class SQLiteCareerStore:
@@ -475,14 +488,19 @@ class SQLiteCareerStore:
         self,
         *,
         run: ExtractionRun,
+        idempotency_key: str,
+        request: Mapping[str, Any],
         context: RequestContext,
+        _connection: sqlite3.Connection | None = None,
     ) -> ExtractionRun:
-        """Persist DraftReady/UnderReview transitions without a start-key replay.
+        """Persist one replay-safe review transition for a future app command.
 
-        ``StartExtractionRun`` owns its idempotency reservation and therefore
-        uses :meth:`finalize_extraction_run`.  Later transitions have a
-        different command boundary, so they must not try to complete that
-        already-consumed start reservation.
+        This store primitive is intentionally not an adapter/UI entry point.
+        ``ConfirmExperienceFacts`` reuses its transaction-level implementation
+        while publishing a profile version.  A future command that returns a
+        draft for rework must call it with an application-owned idempotency key
+        and :class:`RequestContext`; a caller cannot perform the transition
+        without both a durable replay scope and an audited actor.
         """
         _require_run_storage_consistency(run)
         if run.status not in {
@@ -490,10 +508,39 @@ class SQLiteCareerStore:
             ExtractionRunStatus.UNDER_REVIEW,
         }:
             raise ValidationError(
-                "Only draft-ready and under-review extraction states may use the review transition path.",
+                "Only draft-ready and under-review extraction states may use "
+                "the review transition path.",
                 details={"run_id": run.id, "status": run.status.value},
             )
+        if _connection is not None:
+            before = self._load_extraction_run(_connection, run.id)
+            self._persist_extraction_review_transition_in_transaction(
+                _connection,
+                before=before,
+                run=run,
+                context=context,
+                metadata={
+                    "idempotency_scope": _CONFIRM_EXPERIENCE_FACTS_SCOPE,
+                    "idempotency_key": _require_identifier(idempotency_key, "idempotency_key"),
+                    "trigger": "confirm_experience_facts",
+                },
+            )
+            return run
+        normalized_key = _require_identifier(idempotency_key, "idempotency_key")
+        request_hash = hash_request(request)
         with self._database.transaction(immediate=True) as connection:
+            reservation = self._idempotency.reserve_in_transaction(
+                connection,
+                scope=_REVIEW_TRANSITION_SCOPE,
+                idempotency_key=normalized_key,
+                request_hash=request_hash,
+                context=context,
+            )
+            if reservation.state is IdempotencyReservationState.COMPLETED:
+                return self._load_extraction_run(
+                    connection,
+                    _response_identifier(reservation.response, "run_id", reservation.record_id),
+                )
             before = self._load_extraction_run(connection, run.id)
             if before.status not in {
                 ExtractionRunStatus.DRAFT_READY,
@@ -505,18 +552,17 @@ class SQLiteCareerStore:
                     before.status.value,
                     "persist extraction review transition",
                 )
-            self._require_valid_extraction_run_transition(before=before, after=run)
-            self._write_extraction_run(connection, run=run, previous_status=before.status)
-            self._audit.append_in_transaction(
+            self._persist_extraction_review_transition_in_transaction(
                 connection,
-                AuditEvent.create(
-                    context=context,
-                    action=_extraction_run_transition_action(run.status),
-                    target_type="llm_extraction_run",
-                    target_id=run.id,
-                    before=_safe_extraction_run(before),
-                    after=_safe_extraction_run(run),
-                ),
+                before=before,
+                run=run,
+                context=context,
+                metadata={"idempotency_scope": _REVIEW_TRANSITION_SCOPE},
+            )
+            self._idempotency.complete_in_transaction(
+                connection,
+                record_id=reservation.record_id,
+                response=_extraction_run_result_response(run),
             )
         return run
 
@@ -524,6 +570,330 @@ class SQLiteCareerStore:
         """Load one append-only extraction run."""
         with self._database.connect() as connection:
             return self._load_extraction_run(connection, _require_identifier(run_id, "run_id"))
+
+    def create_career_profile(self, *, profile: CareerProfile) -> CareerProfile:
+        """Persist a profile identity before its first immutable version exists."""
+        if profile.current_version_id is not None:
+            raise ValidationError(
+                "A newly created career profile cannot already point to a version.",
+                details={"profile_id": profile.id},
+            )
+        with self._database.transaction(immediate=True) as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO career_profiles (
+                        id, owner_id, tenant_id, display_name, current_version_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        profile.id,
+                        profile.owner_id,
+                        profile.tenant_id,
+                        profile.display_name,
+                        profile.current_version_id,
+                        profile.created_at.isoformat(),
+                        profile.updated_at.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ConflictError(
+                    "A career profile with this identifier already exists.",
+                    details={"profile_id": profile.id},
+                ) from exc
+        return profile
+
+    def get_career_profile(self, *, profile_id: str) -> CareerProfile:
+        """Load the stable profile identity and its current immutable version pointer."""
+        with self._database.connect() as connection:
+            return self._load_career_profile(
+                connection,
+                _require_identifier(profile_id, "profile_id"),
+            )
+
+    def get_profile_version(self, *, profile_version_id: str) -> ProfileVersion:
+        """Load one immutable profile-version header without mutable fact rows."""
+        with self._database.connect() as connection:
+            return self._load_profile_version(
+                connection,
+                _require_identifier(profile_version_id, "profile_version_id"),
+            )
+
+    def publish_profile_version(
+        self,
+        *,
+        profile: CareerProfile,
+        profile_version: ProfileVersion,
+        experiences: Sequence[Experience],
+        achievements: Sequence[ExperienceAchievement],
+        skills: Sequence[Skill],
+        experience_skills: Sequence[ExperienceSkill],
+        evidence: Sequence[ExperienceEvidence],
+    ) -> CareerProfile:
+        """Append a verified version for an internal application-service workflow.
+
+        This lower-level operation has no adapter contract.  Normal callers
+        must use ``ConfirmExperienceFacts`` so publication also transitions
+        the extraction run, writes revision audit data, and consumes an
+        idempotency key.  The guard remains here to protect the invariant for
+        internal callers and direct repository tests.
+        """
+        require_verified_profile_facts(
+            experiences=list(experiences),
+            achievements=list(achievements),
+            experience_skills=list(experience_skills),
+            evidence=list(evidence),
+        )
+        with self._database.transaction(immediate=True) as connection:
+            before = self._load_career_profile(connection, profile.id)
+            if before != profile:
+                raise ValidationError(
+                    "Profile publication must start from the currently persisted profile.",
+                    details={"profile_id": profile.id},
+                )
+            previous = (
+                None
+                if before.current_version_id is None
+                else self._load_profile_version(connection, before.current_version_id)
+            )
+            _require_next_profile_version(profile_version, previous)
+            after = before.with_published_version(
+                profile_version=profile_version,
+                previous_version=previous,
+            )
+            self._insert_profile_version(connection, profile_version)
+            self._insert_profile_facts(
+                connection,
+                profile_version=profile_version,
+                experiences=experiences,
+                achievements=achievements,
+                skills=skills,
+                experience_skills=experience_skills,
+                evidence=evidence,
+            )
+            self._write_career_profile(
+                connection,
+                after,
+                expected_current_version_id=before.current_version_id,
+            )
+        return after
+
+    def peek_experience_confirmation(
+        self,
+        *,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExperienceConfirmationReservation | None:
+        """Check confirmation replay state before reading the immutable draft artifact."""
+        with self._database.connect() as connection:
+            record = self._peek_idempotency_record(
+                connection,
+                scope=_CONFIRM_EXPERIENCE_FACTS_SCOPE,
+                idempotency_key=idempotency_key,
+                request=request,
+                context=context,
+            )
+            if record is None:
+                return None
+            state, record_id, response = record
+            profile_version_id = (
+                None
+                if state is IdempotencyReservationState.IN_PROGRESS
+                else _response_identifier(response, "profile_version_id", record_id)
+            )
+            return ExperienceConfirmationReservation(
+                state=state,
+                idempotency_record_id=record_id,
+                profile_version_id=profile_version_id,
+            )
+
+    def reserve_experience_confirmation(
+        self,
+        *,
+        profile_id: str,
+        extraction_run_id: str,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ExperienceConfirmationReservation:
+        """Reserve a confirmation key and retain enough state for an interrupted replay."""
+        normalized_profile_id = _require_identifier(profile_id, "profile_id")
+        normalized_run_id = _require_identifier(extraction_run_id, "extraction_run_id")
+        normalized_key = _require_identifier(idempotency_key, "idempotency_key")
+        request_hash = hash_request(request)
+        with self._database.transaction(immediate=True) as connection:
+            reservation = self._idempotency.reserve_in_transaction(
+                connection,
+                scope=_CONFIRM_EXPERIENCE_FACTS_SCOPE,
+                idempotency_key=normalized_key,
+                request_hash=request_hash,
+                context=context,
+                allow_in_progress=True,
+            )
+            if reservation.state is IdempotencyReservationState.COMPLETED:
+                return ExperienceConfirmationReservation(
+                    state=reservation.state,
+                    idempotency_record_id=reservation.record_id,
+                    profile_version_id=_response_identifier(
+                        reservation.response,
+                        "profile_version_id",
+                        reservation.record_id,
+                    ),
+                )
+            if reservation.state is IdempotencyReservationState.ACQUIRED:
+                self._load_career_profile(connection, normalized_profile_id)
+                self._load_extraction_run(connection, normalized_run_id)
+                self._store_in_progress_checkpoint(
+                    connection,
+                    record_id=reservation.record_id,
+                    response={"profile_id": normalized_profile_id, "run_id": normalized_run_id},
+                )
+            return ExperienceConfirmationReservation(
+                state=reservation.state,
+                idempotency_record_id=reservation.record_id,
+            )
+
+    def finalize_experience_confirmation(
+        self,
+        *,
+        profile: CareerProfile,
+        profile_version: ProfileVersion,
+        run: ExtractionRun,
+        experiences: Sequence[Experience],
+        achievements: Sequence[ExperienceAchievement],
+        skills: Sequence[Skill],
+        experience_skills: Sequence[ExperienceSkill],
+        evidence: Sequence[ExperienceEvidence],
+        idempotency_record_id: str,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+        context: RequestContext,
+    ) -> ProfileVersion:
+        """Atomically publish user-confirmed facts, audits, and replay response."""
+        require_verified_profile_facts(
+            experiences=list(experiences),
+            achievements=list(achievements),
+            experience_skills=list(experience_skills),
+            evidence=list(evidence),
+        )
+        normalized_record_id = _require_identifier(idempotency_record_id, "idempotency_record_id")
+        normalized_key = _require_identifier(idempotency_key, "idempotency_key")
+        with self._database.transaction(immediate=True) as connection:
+            self._require_confirmation_reservation(
+                connection,
+                record_id=normalized_record_id,
+                idempotency_key=normalized_key,
+                request=request,
+            )
+            before_profile = self._load_career_profile(connection, profile.id)
+            if before_profile != profile:
+                raise ValidationError(
+                    "Confirmation must publish from the currently persisted profile.",
+                    details={"profile_id": profile.id},
+                )
+            before_run = self._load_extraction_run(connection, run.id)
+            if before_run != run:
+                raise ValidationError(
+                    "Confirmation must use the currently persisted extraction run.",
+                    details={"run_id": run.id},
+                )
+            if before_run.status is ExtractionRunStatus.DRAFT_READY:
+                reviewing = before_run.begin_review()
+                self.persist_extraction_review_transition(
+                    run=reviewing,
+                    idempotency_key=normalized_key,
+                    request=request,
+                    context=context,
+                    _connection=connection,
+                )
+            elif before_run.status is ExtractionRunStatus.UNDER_REVIEW:
+                reviewing = before_run
+            else:
+                raise InvalidStateError(
+                    "extraction_run",
+                    before_run.id,
+                    before_run.status.value,
+                    "confirm experience facts",
+                )
+
+            previous_version = (
+                None
+                if before_profile.current_version_id is None
+                else self._load_profile_version(connection, before_profile.current_version_id)
+            )
+            _require_next_profile_version(profile_version, previous_version)
+            after_profile = before_profile.with_published_version(
+                profile_version=profile_version,
+                previous_version=previous_version,
+                updated_at=profile_version.created_at,
+            )
+            before_snapshot = self._profile_revision_snapshot(connection, before_profile)
+            self._insert_profile_version(connection, profile_version)
+            self._insert_profile_facts(
+                connection,
+                profile_version=profile_version,
+                experiences=experiences,
+                achievements=achievements,
+                skills=skills,
+                experience_skills=experience_skills,
+                evidence=evidence,
+            )
+            self._write_career_profile(
+                connection,
+                after_profile,
+                expected_current_version_id=before_profile.current_version_id,
+            )
+            published_run = reviewing.publish_profile_version(
+                profile_version_id=profile_version.id,
+                completed_at=profile_version.created_at,
+            )
+            self._require_valid_extraction_run_transition(before=reviewing, after=published_run)
+            self._write_extraction_run(
+                connection,
+                run=published_run,
+                previous_status=reviewing.status,
+            )
+            self._audit.append_in_transaction(
+                connection,
+                AuditEvent.create(
+                    context=context,
+                    action="career.profile_version.published",
+                    target_type="career_profile",
+                    target_id=profile.id,
+                    before=before_snapshot,
+                    after=self._profile_revision_snapshot(connection, after_profile),
+                    metadata={
+                        "extraction_run_id": run.id,
+                        "profile_version_id": profile_version.id,
+                        "idempotency_scope": _CONFIRM_EXPERIENCE_FACTS_SCOPE,
+                        "idempotency_key": normalized_key,
+                    },
+                ),
+            )
+            self._audit.append_in_transaction(
+                connection,
+                AuditEvent.create(
+                    context=context,
+                    action="career.extraction_run.profile_version_published",
+                    target_type="llm_extraction_run",
+                    target_id=run.id,
+                    before=_safe_extraction_run(reviewing),
+                    after=_safe_extraction_run(published_run),
+                    metadata={
+                        "profile_version_id": profile_version.id,
+                        "idempotency_scope": _CONFIRM_EXPERIENCE_FACTS_SCOPE,
+                        "idempotency_key": normalized_key,
+                    },
+                ),
+            )
+            self._idempotency.complete_in_transaction(
+                connection,
+                record_id=normalized_record_id,
+                response={"profile_version_id": profile_version.id},
+            )
+        return profile_version
 
     def create_skill(self, *, skill: Skill) -> Skill:
         """Persist a skill, explicitly mapping legacy ``None`` taxonomy values to ``''``."""
@@ -675,6 +1045,34 @@ class SQLiteCareerStore:
                 details={"run_id": run.id},
             )
 
+    def _persist_extraction_review_transition_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        before: ExtractionRun,
+        run: ExtractionRun,
+        context: RequestContext,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Write and audit a legal review transition in a caller-owned transaction."""
+        self._require_valid_extraction_run_transition(before=before, after=run)
+        self._write_extraction_run(connection, run=run, previous_status=before.status)
+        self._audit.append_in_transaction(
+            connection,
+            AuditEvent.create(
+                context=context,
+                action=_extraction_run_transition_action(
+                    before_status=before.status,
+                    after_status=run.status,
+                ),
+                target_type="llm_extraction_run",
+                target_id=run.id,
+                before=_safe_extraction_run(before),
+                after=_safe_extraction_run(run),
+                metadata=metadata,
+            ),
+        )
+
     def _require_valid_extraction_run_transition(
         self,
         *,
@@ -815,6 +1213,405 @@ class SQLiteCareerStore:
             )
 
     @staticmethod
+    def _load_career_profile(connection: sqlite3.Connection, profile_id: str) -> CareerProfile:
+        row = connection.execute(
+            """
+            SELECT id, owner_id, tenant_id, display_name, current_version_id, created_at, updated_at
+            FROM career_profiles
+            WHERE id = ?
+            """,
+            (profile_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("career_profile", profile_id)
+        return CareerProfile(
+            id=str(row["id"]),
+            owner_id=str(row["owner_id"]),
+            tenant_id=_optional_text(row["tenant_id"]),
+            display_name=str(row["display_name"]),
+            current_version_id=_optional_text(row["current_version_id"]),
+            created_at=_parse_datetime(row["created_at"], "created_at"),
+            updated_at=_parse_datetime(row["updated_at"], "updated_at"),
+        )
+
+    @staticmethod
+    def _load_profile_version(
+        connection: sqlite3.Connection,
+        profile_version_id: str,
+    ) -> ProfileVersion:
+        row = connection.execute(
+            """
+            SELECT id, profile_id, version, source_summary_json, created_at
+            FROM profile_versions
+            WHERE id = ?
+            """,
+            (profile_version_id,),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("profile_version", profile_version_id)
+        return ProfileVersion(
+            id=str(row["id"]),
+            profile_id=str(row["profile_id"]),
+            version=int(row["version"]),
+            source_summary=_decode_mapping(row["source_summary_json"], "source_summary_json"),
+            created_at=_parse_datetime(row["created_at"], "created_at"),
+        )
+
+    @staticmethod
+    def _insert_profile_version(
+        connection: sqlite3.Connection,
+        profile_version: ProfileVersion,
+    ) -> None:
+        try:
+            connection.execute(
+                """
+                INSERT INTO profile_versions (
+                    id, profile_id, version, source_summary_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_version.id,
+                    profile_version.profile_id,
+                    profile_version.version,
+                    _encode_mapping(profile_version.source_summary, "source_summary"),
+                    profile_version.created_at.isoformat(),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                "A profile version with this identifier or version already exists.",
+                details={
+                    "profile_id": profile_version.profile_id,
+                    "profile_version_id": profile_version.id,
+                    "version": profile_version.version,
+                },
+            ) from exc
+
+    @staticmethod
+    def _write_career_profile(
+        connection: sqlite3.Connection,
+        profile: CareerProfile,
+        *,
+        expected_current_version_id: str | None,
+    ) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE career_profiles
+            SET current_version_id = ?, updated_at = ?
+            WHERE id = ? AND current_version_id IS ?
+            """,
+            (
+                profile.current_version_id,
+                profile.updated_at.isoformat(),
+                profile.id,
+                expected_current_version_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise InfrastructureError(
+                "Career profile current-version pointer could not be updated.",
+                details={"profile_id": profile.id},
+            )
+
+    def _insert_profile_facts(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        profile_version: ProfileVersion,
+        experiences: Sequence[Experience],
+        achievements: Sequence[ExperienceAchievement],
+        skills: Sequence[Skill],
+        experience_skills: Sequence[ExperienceSkill],
+        evidence: Sequence[ExperienceEvidence],
+    ) -> None:
+        """Append all fact rows for a brand-new version without touching history."""
+        experience_ids = {experience.id for experience in experiences}
+        if any(experience.profile_version_id != profile_version.id for experience in experiences):
+            raise ValidationError(
+                "Every experience must belong to the profile version being published.",
+                details={"profile_version_id": profile_version.id},
+            )
+        if len(experience_ids) != len(experiences):
+            raise ValidationError(
+                "A published profile version cannot contain duplicate experience identifiers.",
+                details={"profile_version_id": profile_version.id},
+            )
+        if any(achievement.experience_id not in experience_ids for achievement in achievements):
+            raise ValidationError(
+                "Every achievement must belong to a published experience.",
+                details={"profile_version_id": profile_version.id},
+            )
+        if any(
+            association.experience_id not in experience_ids
+            for association in experience_skills
+        ):
+            raise ValidationError(
+                "Every skill association must belong to a published experience.",
+                details={"profile_version_id": profile_version.id},
+            )
+        achievement_ids = {achievement.id for achievement in achievements}
+        if any(item.experience_id not in experience_ids for item in evidence):
+            raise ValidationError(
+                "Every evidence item must belong to a published experience.",
+                details={"profile_version_id": profile_version.id},
+            )
+        if any(
+            item.experience_achievement_id is not None
+            and item.experience_achievement_id not in achievement_ids
+            for item in evidence
+        ):
+            raise ValidationError(
+                "Evidence may only reference an achievement in the same profile version.",
+                details={"profile_version_id": profile_version.id},
+            )
+
+        try:
+            for experience in experiences:
+                connection.execute(
+                    """
+                    INSERT INTO experiences (
+                        id, profile_version_id, organization, role, date_range, summary,
+                        verification_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        experience.id,
+                        experience.profile_version_id,
+                        experience.organization,
+                        experience.role,
+                        experience.date_range,
+                        experience.summary,
+                        experience.verification_status.value,
+                        experience.created_at.isoformat(),
+                    ),
+                )
+            for achievement in achievements:
+                connection.execute(
+                    """
+                    INSERT INTO experience_achievements (
+                        id, experience_id, action_text, outcome_text, metric_value, metric_unit,
+                        metric_source_document_id, metric_user_confirmed_at, verification_status,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        achievement.id,
+                        achievement.experience_id,
+                        achievement.action_text,
+                        achievement.outcome_text,
+                        achievement.metric_value,
+                        achievement.metric_unit,
+                        achievement.metric_source_document_id,
+                        (
+                            None
+                            if achievement.metric_user_confirmed_at is None
+                            else achievement.metric_user_confirmed_at.isoformat()
+                        ),
+                        achievement.verification_status.value,
+                        achievement.created_at.isoformat(),
+                    ),
+                )
+            skill_ids = self._insert_or_resolve_skills(connection, skills)
+            for association in experience_skills:
+                connection.execute(
+                    """
+                    INSERT INTO experience_skills (
+                        id, experience_id, skill_id, raw_skill_name, proficiency,
+                        verification_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        association.id,
+                        association.experience_id,
+                        skill_ids.get(association.skill_id, association.skill_id),
+                        association.raw_skill_name,
+                        association.proficiency,
+                        association.verification_status.value,
+                        association.created_at.isoformat(),
+                    ),
+                )
+            for item in evidence:
+                connection.execute(
+                    """
+                    INSERT INTO experience_evidence (
+                        id, experience_id, experience_achievement_id, source_type,
+                        source_document_id, source_excerpt, source_locator, confidence,
+                        verification_status, user_verified,
+                        verified_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.id,
+                        item.experience_id,
+                        item.experience_achievement_id,
+                        item.source_type.value,
+                        item.source_document_id,
+                        item.source_excerpt,
+                        item.source_locator,
+                        item.confidence,
+                        item.verification_status.value,
+                        int(item.user_verified),
+                        None if item.verified_at is None else item.verified_at.isoformat(),
+                        item.created_at.isoformat(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                "Profile facts conflict with immutable version or evidence constraints.",
+                details={"profile_version_id": profile_version.id, "reason": str(exc)},
+            ) from exc
+
+    @staticmethod
+    def _insert_or_resolve_skills(
+        connection: sqlite3.Connection,
+        skills: Sequence[Skill],
+    ) -> dict[str, str]:
+        """Reuse globally normalised skills without changing their historical IDs."""
+        resolved: dict[str, str] = {}
+        seen: dict[tuple[str, str], str] = {}
+        for skill in skills:
+            taxonomy_ref = "" if skill.taxonomy_ref is None else skill.taxonomy_ref
+            key = (skill.canonical_name, taxonomy_ref)
+            if key in seen:
+                resolved[skill.id] = seen[key]
+                continue
+            row = connection.execute(
+                "SELECT id FROM skills WHERE canonical_name = ? AND taxonomy_ref = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO skills (id, canonical_name, taxonomy_ref, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (skill.id, skill.canonical_name, taxonomy_ref, skill.created_at.isoformat()),
+                )
+                durable_id = skill.id
+            else:
+                durable_id = str(row["id"])
+            seen[key] = durable_id
+            resolved[skill.id] = durable_id
+        return resolved
+
+    def _profile_revision_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        profile: CareerProfile,
+    ) -> dict[str, Any]:
+        """Build a complete, JSON-safe before/after revision snapshot from stored rows."""
+        version = (
+            None
+            if profile.current_version_id is None
+            else self._load_profile_version(connection, profile.current_version_id)
+        )
+        snapshot: dict[str, Any] = {
+            "profile": {
+                "id": profile.id,
+                "owner_id": profile.owner_id,
+                "display_name": profile.display_name,
+                "current_version_id": profile.current_version_id,
+            },
+            "version": None,
+            "experiences": [],
+            "achievements": [],
+            "skills": [],
+            "evidence": [],
+        }
+        if version is None:
+            return snapshot
+        snapshot["version"] = {
+            "id": version.id,
+            "version": version.version,
+            "source_summary": _json_value(version.source_summary),
+        }
+        snapshot["experiences"] = [
+            _row_mapping(row)
+            for row in connection.execute(
+                """
+                SELECT id, organization, role, date_range, summary, verification_status
+                FROM experiences WHERE profile_version_id = ? ORDER BY created_at ASC, id ASC
+                """,
+                (version.id,),
+            ).fetchall()
+        ]
+        snapshot["achievements"] = [
+            _row_mapping(row)
+            for row in connection.execute(
+                """
+                SELECT id, experience_id, action_text, outcome_text, metric_value, metric_unit,
+                       verification_status
+                FROM experience_achievements
+                WHERE experience_id IN (
+                    SELECT id FROM experiences WHERE profile_version_id = ?
+                ) ORDER BY created_at ASC, id ASC
+                """,
+                (version.id,),
+            ).fetchall()
+        ]
+        snapshot["skills"] = [
+            _row_mapping(row)
+            for row in connection.execute(
+                """
+                SELECT es.id, es.experience_id, es.raw_skill_name, es.proficiency,
+                       es.verification_status, s.canonical_name, s.taxonomy_ref
+                FROM experience_skills AS es
+                JOIN skills AS s ON s.id = es.skill_id
+                WHERE es.experience_id IN (
+                    SELECT id FROM experiences WHERE profile_version_id = ?
+                ) ORDER BY es.created_at ASC, es.id ASC
+                """,
+                (version.id,),
+            ).fetchall()
+        ]
+        snapshot["evidence"] = [
+            _row_mapping(row)
+            for row in connection.execute(
+                """
+                SELECT id, experience_id, experience_achievement_id, source_type,
+                       source_document_id, source_excerpt, source_locator, confidence,
+                       verification_status, user_verified,
+                       verified_at
+                FROM experience_evidence
+                WHERE experience_id IN (
+                    SELECT id FROM experiences WHERE profile_version_id = ?
+                ) ORDER BY created_at ASC, id ASC
+                """,
+                (version.id,),
+            ).fetchall()
+        ]
+        return snapshot
+
+    @staticmethod
+    def _require_confirmation_reservation(
+        connection: sqlite3.Connection,
+        *,
+        record_id: str,
+        idempotency_key: str,
+        request: Mapping[str, Any],
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT scope, idempotency_key, request_hash, status
+            FROM idempotency_records
+            WHERE id = ?
+            """,
+            (record_id,),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["scope"]) != _CONFIRM_EXPERIENCE_FACTS_SCOPE
+            or str(row["idempotency_key"]) != idempotency_key
+            or str(row["request_hash"]) != hash_request(request)
+            or str(row["status"]) != IdempotencyStatus.IN_PROGRESS.value
+        ):
+            raise InfrastructureError(
+                "Experience confirmation does not own an in-progress idempotency reservation.",
+                details={"record_id": record_id},
+            )
+
+    @staticmethod
     def _load_resume_document(connection: sqlite3.Connection, document_id: str) -> ResumeDocument:
         row = connection.execute(
             """
@@ -891,6 +1688,42 @@ def _require_same_extraction_run_state(
             message,
             details={"run_id": actual.id, "fields": changed},
         )
+
+
+def _require_next_profile_version(
+    profile_version: ProfileVersion,
+    previous_version: ProfileVersion | None,
+) -> None:
+    """Verify that a supplied immutable version is the profile's next version."""
+    expected = (
+        ProfileVersion.initial(
+            id=profile_version.id,
+            profile_id=profile_version.profile_id,
+            source_summary=profile_version.source_summary,
+            created_at=profile_version.created_at,
+        )
+        if previous_version is None
+        else ProfileVersion.next(
+            id=profile_version.id,
+            previous_version=previous_version,
+            source_summary=profile_version.source_summary,
+            created_at=profile_version.created_at,
+        )
+    )
+    if expected != profile_version:
+        raise ValidationError(
+            "Profile version is not the next immutable version for this profile.",
+            details={
+                "profile_version_id": profile_version.id,
+                "profile_id": profile_version.profile_id,
+                "requested_version": profile_version.version,
+            },
+        )
+
+
+def _row_mapping(row: sqlite3.Row) -> dict[str, Any]:
+    """Copy a SQLite row into the JSON-safe shape used by revision audit snapshots."""
+    return {str(key): _json_value(row[key]) for key in row.keys()}
 
 
 def _row_to_resume_document(row: sqlite3.Row) -> ResumeDocument:
@@ -984,18 +1817,26 @@ def _extraction_run_result_response(run: ExtractionRun) -> dict[str, str]:
     return {"run_id": run.id, "status": run.status.value}
 
 
-def _extraction_run_transition_action(status: ExtractionRunStatus) -> str:
-    """Name one auditable review-state transition."""
+def _extraction_run_transition_action(
+    *,
+    before_status: ExtractionRunStatus,
+    after_status: ExtractionRunStatus,
+) -> str:
+    """Name one auditable review transition without overloading draft-ready."""
     actions = {
-        ExtractionRunStatus.DRAFT_READY: "career.extraction_run.draft_ready",
-        ExtractionRunStatus.UNDER_REVIEW: "career.extraction_run.under_review",
+        (ExtractionRunStatus.DRAFT_READY, ExtractionRunStatus.UNDER_REVIEW): (
+            "career.extraction_run.under_review"
+        ),
+        (ExtractionRunStatus.UNDER_REVIEW, ExtractionRunStatus.DRAFT_READY): (
+            "career.extraction_run.returned_to_draft"
+        ),
     }
     try:
-        return actions[status]
+        return actions[(before_status, after_status)]
     except KeyError as exc:
         raise ValidationError(
             "Extraction run status does not have an auditable review-transition action.",
-            details={"status": status.value},
+            details={"before_status": before_status.value, "after_status": after_status.value},
         ) from exc
 
 
@@ -1049,6 +1890,23 @@ def _require_run_storage_consistency(run: ExtractionRun) -> None:
             "or publication fields.",
             details={"run_id": run.id, "status": status.value},
         )
+    if run.completed_at is not None:
+        try:
+            completed_before_start = run.completed_at < run.started_at
+        except TypeError as exc:
+            raise ValidationError(
+                "Extraction run timestamps must use comparable timezones.",
+                details={"run_id": run.id},
+            ) from exc
+        if completed_before_start:
+            raise ValidationError(
+                "Extraction run completion time cannot precede its start time.",
+                details={
+                    "run_id": run.id,
+                    "started_at": run.started_at.isoformat(),
+                    "completed_at": run.completed_at.isoformat(),
+                },
+            )
 
 
 def _response_identifier(

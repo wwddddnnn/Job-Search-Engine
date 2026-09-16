@@ -43,6 +43,39 @@ class VerificationStatus(StrEnum):
     REJECTED = "rejected"
 
 
+@dataclass(frozen=True, slots=True)
+class ExperienceFactConfirmation:
+    """The user's explicit selection of facts from one extraction-draft experience.
+
+    Presence in a confirmation request is the affirmative user action for the
+    experience itself.  Achievements and skills are deliberately opt-in too:
+    selecting an experience does *not* implicitly verify all of its children.
+    Unselected draft candidates remain unverified in the immutable extraction
+    artifact and are never copied into a published profile version.
+    """
+
+    experience_index: int
+    achievement_indexes: tuple[int, ...] = ()
+    skill_indexes: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "experience_index",
+            _require_non_negative_index(self.experience_index, "experience_index"),
+        )
+        object.__setattr__(
+            self,
+            "achievement_indexes",
+            _require_distinct_indexes(self.achievement_indexes, "achievement_indexes"),
+        )
+        object.__setattr__(
+            self,
+            "skill_indexes",
+            _require_distinct_indexes(self.skill_indexes, "skill_indexes"),
+        )
+
+
 class EvidenceSourceType(StrEnum):
     """The only allowed origins for persisted career evidence."""
 
@@ -558,7 +591,7 @@ class Skill:
         # normalising the durable domain value to that same representation.
         taxonomy_ref = (
             ""
-            if self.taxonomy_ref is None
+            if self.taxonomy_ref is None or self.taxonomy_ref == ""
             else _require_text(self.taxonomy_ref, "taxonomy_ref")
         )
         object.__setattr__(self, "taxonomy_ref", taxonomy_ref)
@@ -693,6 +726,47 @@ class ExperienceEvidence:
         )
 
 
+def require_verified_profile_facts(
+    *,
+    experiences: tuple[Experience, ...] | list[Experience],
+    achievements: tuple[ExperienceAchievement, ...] | list[ExperienceAchievement],
+    experience_skills: tuple[ExperienceSkill, ...] | list[ExperienceSkill],
+    evidence: tuple[ExperienceEvidence, ...] | list[ExperienceEvidence],
+) -> None:
+    """Reject every unverified fact before it can enter a published version.
+
+    SQLite 0004 intentionally permits draft review values in fact tables so
+    future review workflows can retain them.  A ``ProfileVersion`` is a
+    stronger boundary: it may contain only explicitly user-confirmed facts.
+    Both the confirmation use case and the persistence adapter call this
+    guard, so a caller cannot turn a draft item into published data merely by
+    constructing persistence objects directly.
+    """
+    groups = {
+        "experience": experiences,
+        "experience_achievement": achievements,
+        "experience_skill": experience_skills,
+        "experience_evidence": evidence,
+    }
+    for fact_type, values in groups.items():
+        for value in values:
+            if value.verification_status is not VerificationStatus.VERIFIED:
+                raise ValidationError(
+                    "Published profile versions may contain verified facts only.",
+                    details={
+                        "fact_type": fact_type,
+                        "fact_id": value.id,
+                        "verification_status": value.verification_status.value,
+                    },
+                )
+    for item in evidence:
+        if not item.user_verified or item.verified_at is None:
+            raise ValidationError(
+                "Published profile evidence requires explicit user verification.",
+                details={"evidence_id": item.id},
+            )
+
+
 # The public spelling mirrors the section title in the architecture document.
 ResumeDocumentStatus = DocumentStatus
 
@@ -738,6 +812,30 @@ def _optional_text(value: object, field_name: str) -> str | None:
     if value is None:
         return None
     return _require_text(value, field_name)
+
+
+def _require_non_negative_index(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValidationError(
+            f"{field_name} must be a non-negative integer.",
+            details={"field": field_name, "value": value},
+        )
+    return value
+
+
+def _require_distinct_indexes(value: object, field_name: str) -> tuple[int, ...]:
+    if not isinstance(value, tuple):
+        raise ValidationError(
+            f"{field_name} must be a tuple of indexes.",
+            details={"field": field_name},
+        )
+    indexes = tuple(_require_non_negative_index(index, field_name) for index in value)
+    if len(set(indexes)) != len(indexes):
+        raise ValidationError(
+            f"{field_name} must not contain duplicate indexes.",
+            details={"field": field_name},
+        )
+    return indexes
 
 
 def _require_datetime(value: object, field_name: str) -> None:

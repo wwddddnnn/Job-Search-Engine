@@ -5,6 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from json import JSONDecodeError
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -299,7 +300,7 @@ class CareerExtractionTestCase(unittest.TestCase):
                     context=self.context,
                 )
 
-        self.assertEqual("validation_error", raised.exception.code)
+        self.assertEqual("extraction_parse_error", raised.exception.code)
         self.assertEqual("career-extraction-correlation", raised.exception.correlation_id)
         self.assertEqual("invalid_json", raised.exception.details["reason"])
 
@@ -324,10 +325,14 @@ class CareerExtractionTestCase(unittest.TestCase):
 
         reviewing = self.store.persist_extraction_review_transition(
             run=ready.begin_review(),
+            idempotency_key="extraction-review-begin-1",
+            request={"run_id": ready.id, "transition": "under_review"},
             context=self.context,
         )
         returned = self.store.persist_extraction_review_transition(
             run=reviewing.return_to_draft(),
+            idempotency_key="extraction-review-return-1",
+            request={"run_id": ready.id, "transition": "returned_to_draft"},
             context=self.context,
         )
 
@@ -336,6 +341,26 @@ class CareerExtractionTestCase(unittest.TestCase):
         self.assertEqual(returned, persisted)
         self.assertEqual(ready.output_ref, returned.output_ref)
         self.assertEqual(ready.completed_at, returned.completed_at)
+        audit_actions = [
+            str(row["action"])
+            for row in self.database.fetch_all(
+                """
+                SELECT action FROM audit_events
+                WHERE target_type = ? AND target_id = ?
+                ORDER BY occurred_at ASC, id ASC
+                """,
+                ("llm_extraction_run", ready.id),
+            )
+        ]
+        self.assertEqual(
+            [
+                "career.extraction_run.started",
+                "career.extraction_run.draft_ready",
+                "career.extraction_run.under_review",
+                "career.extraction_run.returned_to_draft",
+            ],
+            audit_actions,
+        )
 
     def test_candidate_without_a_source_locator_is_rejected_and_persisted_as_failed(self) -> None:
         document_id = self._import_resume()
@@ -372,6 +397,38 @@ class CareerExtractionTestCase(unittest.TestCase):
         run = self.store.get_extraction_run(run_id=str(row["id"]))
         self.assertEqual(ExtractionRunStatus.DRAFT_FAILED, run.status)
         self.assertIsNone(run.output_ref)
+
+    def test_store_rejects_an_extraction_completion_before_its_start_time(self) -> None:
+        document_id = self._import_resume()
+        document = self.store.get_resume_document(document_id=document_id)
+        started_at = datetime.now(UTC)
+        invalid_run = document.start_extraction_run(
+            run_id="backwards-completion-run",
+            input_hash="backwards-input-hash",
+            model=self.service.model,
+            prompt_version=self.service.prompt_version,
+            schema_version=self.service.schema_version,
+            started_at=started_at,
+        ).mark_draft_ready(
+            output_ref="drafts/backwards.json",
+            completed_at=started_at - timedelta(seconds=1),
+        )
+
+        with self.assertRaises(ValidationError) as raised:
+            self.store.reserve_extraction_run(
+                run=invalid_run,
+                idempotency_key="backwards-completion-key",
+                request={
+                    "document_id": document_id,
+                    "model": self.service.model,
+                    "prompt_version": self.service.prompt_version,
+                    "schema_version": self.service.schema_version,
+                },
+                context=self.context,
+            )
+
+        self.assertEqual("validation_error", raised.exception.code)
+        self.assertEqual([], self.database.fetch_all("SELECT id FROM llm_extraction_runs"))
 
     def _import_resume(self) -> str:
         source = self.workspace / "incoming" / "resume.txt"

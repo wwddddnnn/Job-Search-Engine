@@ -13,12 +13,14 @@ from job_search_assistant.career.extraction import (
 from job_search_assistant.career.ports import (
     CareerExtractionPort,
     DocumentStoragePort,
+    ExtractionParseError,
     ExtractedResumeText,
     ResumeTextExtractorPort,
     ResumeTextExtractionError,
 )
 from job_search_assistant.career.store import (
     CareerStore,
+    ExperienceConfirmationReservation,
     ExtractionRunReservation,
     ResumeImportReservation,
 )
@@ -26,6 +28,7 @@ from job_search_assistant.career.types import (
     CareerProfile,
     DocumentStatus,
     EvidenceSourceType,
+    ExperienceFactConfirmation,
     Experience,
     ExperienceAchievement,
     ExperienceEvidence,
@@ -38,6 +41,7 @@ from job_search_assistant.career.types import (
     ResumeText,
     Skill,
     VerificationStatus,
+    require_verified_profile_facts,
 )
 
 __all__ = [
@@ -45,10 +49,13 @@ __all__ = [
     "CareerExtractionPort",
     "CareerProfile",
     "CareerStore",
+    "ExperienceConfirmationReservation",
     "DocumentStatus",
     "DocumentStoragePort",
+    "ExtractionParseError",
     "DraftEvidence",
     "EvidenceSourceType",
+    "ExperienceFactConfirmation",
     "Experience",
     "ExperienceAchievement",
     "ExperienceAchievementDraft",
@@ -70,6 +77,7 @@ __all__ = [
     "ResumeTextExtractorPort",
     "Skill",
     "VerificationStatus",
+    "require_verified_profile_facts",
     "validate_draft_schema",
     "validate_extraction_draft",
 ]

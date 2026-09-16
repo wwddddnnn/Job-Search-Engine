@@ -25,6 +25,18 @@ class ResumeTextExtractionError(ApplicationError):
         super().__init__("resume_text_extraction_failed", message, error_details)
 
 
+class ExtractionParseError(ValidationError):
+    """A terminal failure to parse the extraction provider's response.
+
+    This is intentionally distinct from caller-side ``validation_error`` so
+    adapters can distinguish a malformed provider response from an invalid
+    command payload and decide whether a new extraction run is appropriate.
+    """
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        ApplicationError.__init__(self, "extraction_parse_error", message, details or {})
+
+
 @dataclass(frozen=True, slots=True)
 class ExtractedResumeText:
     """Parser output before the application service stores it as :class:`ResumeText`."""
