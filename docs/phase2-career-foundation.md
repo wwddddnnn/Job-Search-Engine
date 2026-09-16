@@ -163,6 +163,9 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | **S4** | `ConfirmExperienceFacts` → `ProfileVersion` + 修订审计（复用 `audit_events`） | 只有显式确认项为 verified；before/after 可回溯 |
 | **S5** | `GetVerifiedEvidencePack` + `GetCareerProfileSnapshot` | 未确认事实进不了 pack；每项带 evidence id/scope/verified state；快照最小化 |
 
+> **S4 口径补充**：`ConfirmExperienceFacts` 本轮只支持「接受 + 子项勾选」，**不支持改写草稿值**（用户编辑覆盖）。
+> 编辑覆盖留给 Phase 2.5 的核验 UI，不在 Phase 2（含 S5）范围内——后续轮次不要把它当成缺口。
+
 每片的验收 = 本文档「验收标准」中与之相关的条目 + 上表该片完成标志。
 
 ## 后续阶段（不在本阶段内）
@@ -195,6 +198,16 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 3 | 解析失败与入参校验失败共用 `code=validation_error`，调用方无法据此判断可重试性 | 建议给独立 code（如 `extraction_parse_error`） |
 | 4 | `completed_at` 变必填后，一致性只保证「与调用方传入值一致」，不校验时间单调性 | store 侧顺带拒绝 `completed_at < started_at` |
 | 5 | 「未配置 provider」被定为确定性失败 → 落 `draft_failed` 并**消耗 start key**，配置修好后必须换新 key | 后端口径无异议；将来 UI 文案需说明 |
+
+## S4 审查遗留项（S5 必须处理）
+
+| # | 观察 | 落点 |
+|---|---|---|
+| 1 | **`current_version_id` 的跨 profile 归属只被间接保证**：非首版靠 `ProfileVersion.next` 从 previous 派生 profile_id 再比对；**首版（previous 为 `None`）时 `_require_next_profile_version` 只是把 `profile_version.profile_id` 原样回显**，store 层没有显式的 `profile_version.profile_id == profile.id` 断言，也没有跨 profile 的测试。本轮任务把这条列为版本落库的硬要求 | S5 必须补：在两条发布路径开头加显式归属断言 + 一个跨 profile 测试；若 `CareerProfile.with_published_version` 内部已校验，就在 docstring 点明 |
+| 2 | `ExtractionParseError` 继承 `ValidationError`：code 已独立，但**按类型分流**的 adapter 仍会把 provider 响应解析失败当入参错误（400） | 改为 `ApplicationError` 直接子类，或在 docstring 注明「类型上仍属 ValidationError」 |
+| 3 | `create_career_profile` 是新增的**无幂等键、无审计写入口**（目前只有测试调用），形态接近 S3 遗留 #1 那类问题 | docstring 标注「仅供上层 profile 创建命令/测试使用，adapter 不得直调」，或把 profile 创建纳入 S5 的命令 |
+| 4 | 测试缺口：空 confirmations、重复 `experience_index`、越界索引（experience/achievement/skill）、achievement 带 draft 被拒——均只有代码覆盖、无断言；同 key 并发（第二个请求在 finalize 时看到 COMPLETED）抛 `InfrastructureError` 而非重放——单进程本地场景可接受，记录备查 | S5 顺手补齐，或明确不补 |
+| 5 | 契约表里 `ConfirmExperienceFacts` 输入含「draft changes」（用户编辑值），本轮只支持 accept + 子项勾选 | 已在切片表处注明归 Phase 2.5，本轮不再当缺口 |
 
 ## 已确认的设计决策
 
