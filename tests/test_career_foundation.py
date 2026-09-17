@@ -72,7 +72,10 @@ class CareerFoundationMigrationTestCase(unittest.TestCase):
             }.issubset(tables)
         )
         versions = self.services.database.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-        self.assertEqual(["0001", "0002", "0003", "0004"], [str(row["version"]) for row in versions])
+        self.assertEqual(
+            ["0001", "0002", "0003", "0004", "0005"],
+            [str(row["version"]) for row in versions],
+        )
 
     def test_modified_applied_0004_is_rejected_by_checksum(self) -> None:
         migration = self.migrations_path / "0004_career_foundation.sql"

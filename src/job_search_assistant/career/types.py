@@ -641,6 +641,7 @@ class ExperienceEvidence:
     confidence: float | None = None
     verified_at: datetime | None = None
     experience_achievement_id: str | None = None
+    experience_skill_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _require_text(self.id, "id"))
@@ -657,6 +658,12 @@ class ExperienceEvidence:
             "experience_achievement_id",
             _optional_text(self.experience_achievement_id, "experience_achievement_id"),
         )
+        object.__setattr__(
+            self, "experience_skill_id",
+            _optional_text(self.experience_skill_id, "experience_skill_id"),
+        )
+        if self.experience_skill_id is not None and self.experience_achievement_id is not None:
+            raise ValidationError("Evidence cannot target both an achievement and a skill.")
         if self.confidence is not None:
             if isinstance(self.confidence, bool) or not isinstance(self.confidence, (int, float)):
                 raise ValidationError("confidence must be numeric.", details={"field": "confidence"})

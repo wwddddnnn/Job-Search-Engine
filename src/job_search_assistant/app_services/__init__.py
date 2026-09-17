@@ -20,7 +20,10 @@ from job_search_assistant.app_services.career import (
 from job_search_assistant.app_services.discovery import SearchRunService
 from job_search_assistant.app_services.foundation import FoundationServices, build_foundation
 
+from job_search_assistant.app_services.career_review import CareerReviewService
+
 __all__ = [
+    "CareerReviewService",
     "FoundationServices",
     "ConfirmExperienceFacts",
     "ConfirmExperienceFactsResult",

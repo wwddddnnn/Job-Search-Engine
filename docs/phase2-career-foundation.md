@@ -6,7 +6,7 @@ Phase 2 实现 Career Profile / Experience Library 的**后端基础**：导入�
 
 本阶段**明确不含**（已与用户确认的范围边界）：
 
-- **UI / HTTP / CLI 适配层**：核验界面放到 **Phase 2.5**（细节另议）。本阶段只交付 domain + application service + SQLite 实现 + 测试，与 Phase 1 的交付形态一致。
+- **UI / HTTP / CLI 适配层**：核验界面放到 **Phase 2.5**（已确认范围见 [Phase 2.5 文档](phase2.5-career-review-ui.md)）。本阶段只交付 domain + application service + SQLite 实现 + 测试，与 Phase 1 的交付形态一致。
 - **真实 LLM provider**：本阶段只定义抽取 port，用 fake 实现跑测试。未配置 provider 时必须报**明确的配置错误**，不允许静默降级，更不允许伪造草稿。真实 provider 接入是 Phase 2 完成后的独立一步。
 - Matching、Application、Agent/MCP、浏览器，以及跨用户/多租户。
 
@@ -170,7 +170,7 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 
 ## 后续阶段（不在本阶段内）
 
-- **Phase 2.5**：核验 UI（用户已确认要做，细节待定）。
+- **Phase 2.5**：本地人工整理与核验 UI，支持多份 Markdown、自动保存/部分发布、多套 API 配置和 Mock 优化/合并；具体要求见 [Phase 2.5 文档](phase2.5-career-review-ui.md)。不包含真实 LLM 网络调用。
 - **B 步**：接入真实 LLM provider（用户已确认在 Phase 2 完成后进行）。
 - **Phase 3**：Job Matching。
 
@@ -227,4 +227,3 @@ Phase 2 内不处理，但下游开工前应知道：
 1. **`RevisionAudit` 复用 Phase 0 的 `audit_events`**，action 走 `career.*` 命名空间，不新建平行审计表 —— 理由：§8.2 把审计集中在 Audit & Operations，平行表会制造两套审计来源。
 2. **受控文件存储位置**：`.job-search-assistant/documents/<content_hash>`（与 Phase 1 数据库同根目录，可用参数覆盖）。
 3. **本阶段不含 UI**（核验界面 → Phase 2.5）与**不含真实 LLM provider**（→ Phase 2 完成后的 B 步）。两者均由用户确认，不属于本阶段缺口。
-

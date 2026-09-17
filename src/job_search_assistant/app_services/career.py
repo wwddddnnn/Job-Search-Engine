@@ -644,7 +644,7 @@ class CareerProfileSnapshot:
     """Minimal read model of one immutable, verified career profile version."""
 
     profile_id: str
-    profile_version_id: str
+    profile_version_id: str | None
     version: int
     display_name: str
     experiences: tuple[CareerExperienceSnapshot, ...]
@@ -704,10 +704,14 @@ class GetCareerProfileSnapshot:
         profile_version_id: str | None = None,
     ) -> CareerProfileSnapshot:
         """Return confirmed profile content without raw documents, storage refs, or audit data."""
+        profile = self.store.get_career_profile(profile_id=profile_id)
+        if profile_version_id is None and profile.current_version_id is None:
+            return CareerProfileSnapshot(profile.id, None, 0, profile.display_name, ())
         profile, facts = _load_verified_profile_facts(
             store=self.store,
             profile_id=profile_id,
             profile_version_id=profile_version_id,
+            allow_empty=True,
         )
         achievements_by_experience: dict[str, list[ExperienceAchievement]] = {}
         for achievement in facts.achievements:
@@ -753,6 +757,7 @@ def _load_verified_profile_facts(
     store: CareerStore,
     profile_id: str,
     profile_version_id: str | None,
+    allow_empty: bool = False,
 ) -> tuple[CareerProfile, ProfileVersionFacts]:
     """Resolve one profile version and reject any non-verified persisted fact."""
     normalized_profile_id = _require_identifier(profile_id, "profile_id")
@@ -781,7 +786,7 @@ def _load_verified_profile_facts(
         experience_skills=facts.experience_skills,
         evidence=facts.evidence,
     )
-    if not facts.experiences:
+    if not facts.experiences and not allow_empty:
         raise NoVerifiedCareerFactsError(
             profile_id=profile.id,
             profile_version_id=facts.profile_version.id,
@@ -797,8 +802,11 @@ def _evidence_pack_items(
     """Associate every returned fact with verified evidence and a stable scope."""
     general_evidence_by_experience: dict[str, list[ExperienceEvidence]] = {}
     achievement_evidence_by_id: dict[str, list[ExperienceEvidence]] = {}
+    skill_evidence_by_id: dict[str, list[ExperienceEvidence]] = {}
     for evidence in facts.evidence:
-        if evidence.experience_achievement_id is None:
+        if evidence.experience_skill_id is not None:
+            skill_evidence_by_id.setdefault(evidence.experience_skill_id, []).append(evidence)
+        elif evidence.experience_achievement_id is None:
             general_evidence_by_experience.setdefault(evidence.experience_id, []).append(evidence)
         else:
             achievement_evidence_by_id.setdefault(
@@ -840,7 +848,9 @@ def _evidence_pack_items(
         )
 
     for skill in facts.experience_skills:
-        evidence = general_evidence_by_experience.get(skill.experience_id, ())
+        evidence = skill_evidence_by_id.get(
+            skill.id, general_evidence_by_experience.get(skill.experience_id, ()),
+        )
         _require_pack_evidence(
             evidence=evidence,
             profile_id=profile_id,

@@ -45,7 +45,16 @@ from job_search_assistant.career.types import (
     require_verified_profile_facts,
 )
 
+from job_search_assistant.career.review import ReviewDraft, ReviewItem, ReviewItemKind, ReviewSource
+from job_search_assistant.career.review_store import ReviewStore, ReviewTransaction
+
 __all__ = [
+    "ReviewDraft",
+    "ReviewItem",
+    "ReviewItemKind",
+    "ReviewSource",
+    "ReviewStore",
+    "ReviewTransaction",
     "EXTRACTION_DRAFT_SCHEMA_VERSION",
     "CareerExtractionPort",
     "CareerProfile",
