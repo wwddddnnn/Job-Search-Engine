@@ -122,3 +122,49 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 9. 用户可手工处理重复经历；显式启动 Mock 合并会自动写入草稿，可撤销，仍需人工发布。
 10. 测试覆盖自动保存顺序/失败、幂等重试、版本冲突、部分发布、旧结果覆盖防护及历史保留。自动测试不访问外部网络；本地 HTTP/浏览器验证可使用本机服务。
 11. 提供独立演练数据与人工验收步骤，演练数据不冒充用户已确认的职业事实；本阶段不要求 PDF/DOC 或真实 LLM 调用通过验收。
+
+## S1 后端契约（已实现）
+
+本节只说明审核服务；启动入口、HTTP 和页面仍属于 S2。
+
+装配：`CareerReviewService(store=SQLiteReviewStore(foundation.database))`。
+公开类型由 `career` 导出；应用服务和 SQLite 实现分别由 `app_services` 与
+`infrastructure.sqlite` 导出。使用方式见 `tests/test_career_review.py`。
+
+- `create_draft(profile_id, display_name?, context, idempotency_key)`：每个 profile
+  一份持久化审核草稿；已有档案从当前版本建立可编辑条目，没有档案时以 display_name 创建
+  未发布的 profile，不需要文档或抽取运行。同 profile 再打开返回已有草稿。
+- `get_draft(draft_id)`：从数据库读回条目、来源、核验状态、软删除标记和草稿版本。
+- `create_item` / `edit_item` / `delete_item` / `restore_item`：创建、修改、软删除和撤销删除。
+  子项通过稳定的 `parent_id` 归属经历。编辑和撤销删除后必须重新确认。
+- `decide_item(decision=confirm|reject|clarify|confirm_delete)`：只核验指定条目；
+  `confirm_delete` 仅适用于已软删除条目，普通 `confirm` 不能确认删除。
+- 所有条目写操作携带 `draft_id`、`expected_version`、`context`、`idempotency_key`。
+  返回的 `ReviewDraft.version` 是本次已持久化版本；旧版本保存返回 `ConflictError`。
+- `preview_publication(draft_id, expected_version, base_version_id)` 为只读预览，
+  返回新增、修改、删除清单。`publish` 使用同一组版本参数并携带 context / 幂等键，
+  在事务内重新检查版本，返回新档案版本、草稿快照和实际发布摘要。
+
+`base_version_id=None` 明确表示此前没有发布版本。发布后草稿版本也递增，未确认编辑保留，
+它们的已发布事实引用推进到新版本的旧表述副本。新的已确认子项若父经历尚未发布，则继续
+等待；已有事实不会因未确认编辑、拒绝、待澄清或尚未确认的软删除而消失。
+确认删除整段经历表示移除该经历及其已发布子项，预览和发布摘要逐项列出这些删除；
+子项编辑内容仍保留在审核草稿中。撤销父经历删除后可以继续整理并逐项确认。
+
+来源使用 `ReviewSource(document_id, DraftEvidence(...))`，新建来源必须含
+`source_locator`（例如 `offset:9:26`，以调用方选中的不可变文档文本为坐标）；已有 Phase 2
+档案的 excerpt-only 引用也会保留。待发布引用以内嵌引用值保存于草稿，不建立平行证据表。
+确认发布后沿用 `ExperienceEvidence`，无文档依据的事实使用 `user_assertion`。
+0005 为现有 evidence 增加可选 `experience_skill_id`，使手工技能自己的来源与父经历来源
+可区分；旧 Phase 2 数据继续支持原有经历级证据回退。
+
+保存结果只在事务提交后返回；事务包含业务变更、`career.review.*` 审计与幂等完成记录。
+失败全部回滚，相同输入与幂等键可重试。已完成请求重试返回原始响应（包括原草稿版本），
+不会重新执行，也不会覆盖之后的编辑。未来 adapter 必须保留失败输入、串行提交或处理版本
+冲突，并忽略比当前视图更旧的响应；有待保存输入时不得发布，须先取得该输入的保存确认，
+再将该版本用于预览和发布。
+
+`GetCareerProfileSnapshot` 对未发布 profile 返回 `profile_version_id=None, version=0`、
+空经历列表；已发布的合法空版本返回实际版本 ID / 版本号和空列表。不存在的 profile
+仍为 `NotFoundError`，存储错误不转成空状态。`GetVerifiedEvidencePack` 继续拒绝无可信事实
+的档案，且不会读取审核草稿。

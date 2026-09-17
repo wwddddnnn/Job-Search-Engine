@@ -46,7 +46,10 @@ class FoundationTestCase(unittest.TestCase):
         table_names = {str(row["name"]) for row in table_rows}
         self.assertTrue({"schema_migrations", "idempotency_records", "audit_events"}.issubset(table_names))
         migrations = self.services.database.fetch_all("SELECT version FROM schema_migrations")
-        self.assertEqual(["0001", "0002", "0003", "0004"], [str(row["version"]) for row in migrations])
+        self.assertEqual(
+            ["0001", "0002", "0003", "0004", "0005"],
+            [str(row["version"]) for row in migrations],
+        )
 
     def test_modified_applied_migration_is_rejected(self) -> None:
         migration_path = self.migrations_path / "0001_foundation.sql"

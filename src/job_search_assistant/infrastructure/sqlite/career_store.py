@@ -743,6 +743,7 @@ class SQLiteCareerStore:
                     id=str(row["id"]),
                     experience_id=str(row["experience_id"]),
                     experience_achievement_id=_optional_text(row["experience_achievement_id"]),
+                    experience_skill_id=_optional_text(row["experience_skill_id"]),
                     source_type=str(row["source_type"]),
                     source_document_id=_optional_text(row["source_document_id"]),
                     source_excerpt=_optional_text(row["source_excerpt"]),
@@ -759,7 +760,8 @@ class SQLiteCareerStore:
                 )
                 for row in connection.execute(
                     """
-                    SELECT id, experience_id, experience_achievement_id, source_type,
+                    SELECT id, experience_id, experience_achievement_id, experience_skill_id,
+                           source_type,
                            source_document_id, source_excerpt, source_locator, confidence,
                            verification_status, user_verified, verified_at, created_at
                     FROM experience_evidence
@@ -1536,6 +1538,18 @@ class SQLiteCareerStore:
                 details={"profile_version_id": profile_version.id},
             )
 
+        achievement_parents = {item.id: item.experience_id for item in achievements}
+        skill_parents = {item.id: item.experience_id for item in experience_skills}
+        for item in evidence:
+            if item.experience_skill_id is not None and (
+                skill_parents.get(item.experience_skill_id) != item.experience_id
+            ):
+                raise ValidationError("Skill evidence must belong to the same experience.")
+            if item.experience_achievement_id is not None and (
+                achievement_parents.get(item.experience_achievement_id) != item.experience_id
+            ):
+                raise ValidationError("Achievement evidence must belong to the same experience.")
+
         try:
             for experience in experiences:
                 connection.execute(
@@ -1608,8 +1622,8 @@ class SQLiteCareerStore:
                         id, experience_id, experience_achievement_id, source_type,
                         source_document_id, source_excerpt, source_locator, confidence,
                         verification_status, user_verified,
-                        verified_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        verified_at, created_at, experience_skill_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item.id,
@@ -1624,6 +1638,7 @@ class SQLiteCareerStore:
                         int(item.user_verified),
                         None if item.verified_at is None else item.verified_at.isoformat(),
                         item.created_at.isoformat(),
+                        item.experience_skill_id,
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -1739,7 +1754,8 @@ class SQLiteCareerStore:
             _row_mapping(row)
             for row in connection.execute(
                 """
-                SELECT id, experience_id, experience_achievement_id, source_type,
+                SELECT id, experience_id, experience_achievement_id, experience_skill_id,
+                           source_type,
                        source_document_id, source_excerpt, source_locator, confidence,
                        verification_status, user_verified,
                        verified_at
