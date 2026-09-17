@@ -9,7 +9,7 @@
 | **Phase 0 基础层** | 模块边界、校验和保护的 SQLite 迁移、错误模型、RequestContext、幂等、审计 | ✅ |
 | **Phase 1 Job Discovery** | SearchConfig 持久化、JobsPipe Provider 适配、分页搜索运行、原始响应留存、规范化、同 source 去重、不可变 job snapshot | ✅ |
 | **Phase 2 Career Foundation** | 迁移 0004（10 张表）、`career/` 领域层、受控文件存储、纯文本提取器、导入/抽取/确认/证据包/快照五个应用服务 | ✅ S1–S5 |
-| Phase 2.5 核验 UI | 用户确认与编辑职业事实的界面 | ⏳ 待开始 |
+| Phase 2.5 人工整理与核验 UI | 多份 Markdown、中英文界面、自动保存/部分发布、多套 API 配置与 Mock 优化/合并 | ⏳ 需求已确认，待实现 |
 | B 步 真实 LLM | 接入真实 provider（当前只有确定性假 provider） | ⏳ 待开始 |
 | Phase 3 及以后 | Job Matching、申请管理、Agent/MCP、浏览器投递 | ⏳ 未开始 |
 
@@ -111,6 +111,9 @@ service = ImportResumeDocument(
 `NEEDS_FIX` 会带着审查意见再跑一轮，上限 3 轮）。
 
 - `docs/builder-conventions.md` — builder 必须遵守的约定（脚本每轮把它注入 builder 的 prompt）
+- `docs/hermes-reviewer-kit.md` — reviewer 套件的本地适配说明：reviewer 复用一个具名会话
+  （`REVIEWER_SESSION`，换名字=重置上下文）、会话归属补齐（`FILE_REVIEWER_SESSION`）、
+  输出解析与实证记录都在这一份里
 - `scripts/codex-stream-filter.py` — 把 `codex exec --json` 的事件流实时渲染成人可读行（不额外消耗 token）
 - `scripts/cap-diff.py` — 按字节预算**按文件**裁剪 diff，并列出被舍弃的文件名
 - `dev.env` — 本机解释器路径（`PYBIN`）
@@ -120,5 +123,6 @@ service = ImportResumeDocument(
 - `docs/Job Search Assistant 技术架构文档.md` — 总架构，冲突时以它为准
 - `docs/phase0-foundation.md` / `docs/phase1-job-discovery.md` / `docs/phase2-career-foundation.md`
   — 各阶段设计说明、验收标准与遗留清单
+- [Phase 2.5 人工整理与核验 UI](docs/phase2.5-career-review-ui.md)
+  — 已确认的交互、LLM 配置与 Mock 范围、版本规则和人工验收标准
 - `DEVELOPMENT_LOG.md` — 每轮 builder / reviewer 的结果与提交信息
-

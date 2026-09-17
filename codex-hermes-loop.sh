@@ -23,6 +23,10 @@
 #   TEST_CMD="..."              每轮验收测试命令
 #   PYBIN=/path/to/python       验收测试用的解释器（也可写进仓库根的 dev.env）
 #   MAX_CONTEXT_KB=300          reviewer 输入上限，超出则按文件裁剪 diff（并列出未包含的文件）
+#   REVIEWER_SESSION=jse-reviewer
+#                               reviewer 复用的具名 session（默认 jse-reviewer）：每轮 resume 同一个
+#                               会话，而不是每轮新开一个；换个名字即换一个干净会话（重置上下文）
+#   FILE_REVIEWER_SESSION=0     关掉 reviewer 会话的归属补齐（该段会写 Hermes 的 state.db；关掉后跑完手动核对）
 #   KEEP_RUNS=1                 保留本轮中间产物（.job-search-assistant/loop-runs/<时间戳>/）
 #   SKIP_TESTS=1                跳过测试门（不建议）
 #   DRY_RUN=1                   本地演练：不 commit、不 push
@@ -40,6 +44,9 @@ BUILDER="${BUILDER:-codex}"
 REVIEWER="${REVIEWER:-hermes}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 MAX_CONTEXT_KB="${MAX_CONTEXT_KB:-300}"
+# reviewer 的具名 session：上下文由 Hermes 自动压缩（config.yaml compression.enabled /
+# threshold=0.5 / target_ratio=0.2）；需要彻底重置上下文时，换一个名字（另起一个干净会话）。
+REVIEWER_SESSION="${REVIEWER_SESSION:-jse-reviewer}"
 LOG_FILE="DEVELOPMENT_LOG.md"
 REVIEWER_PROMPT=".opencode/prompts/reviewer.md"
 BUILDER_CONVENTIONS="docs/builder-conventions.md"
@@ -193,6 +200,8 @@ run_builder() {
     BUILDER_RC=$?
   else
     # 注意: -z 的取值必须紧跟在 -z 后面，否则 argparse 会把下一个选项当成它的值
+    # （顶层 -z 的 oneshot 路径无法 resume，所以 BUILDER=hermes 时仍是每轮新开一个 session；
+    #   本项目 builder 用 codex，不产生 Hermes session，这里保持原样）
     hermes -t coding --in "$REPO_ROOT" -z "$(cat "$prompt_file")" > "$out_file" 2>&1
     BUILDER_RC=$?
   fi
@@ -228,11 +237,77 @@ run_reviewer() {
   local prompt_file="$1" out_file="$2"
   if [ "$REVIEWER" = "hermes" ]; then
     # -t vision: 只给 vision_analyze 一个工具，物理上无法写文件/执行命令
-    hermes -t vision --ignore-rules --in "$REPO_ROOT" -z "$(cat "$prompt_file")" > "$out_file" 2>&1
+    # 复用同一个具名 session：--create-if-missing 首次创建，之后每轮 resume 同一个会话。
+    # 不能靠顶层 -z 来 resume：顶层 oneshot 分支不认 -c/--resume，每轮都会新开一个 session
+    # （S2–S5 期间就是这样堆了 5 个 reviewer session）。改用 chat 子命令 + --query-file，
+    # 顺带不再受命令行参数长度上限的约束。
+    # -Q/--quiet: 不打印 banner/spinner/工具预览，也不回显 prompt —— 输出只剩最终回答
+    # 和一行 session_id，STATUS 字段不会跟 prompt 回显里的格式说明撞车。
+    hermes chat -Q --in "$REPO_ROOT" -t vision --ignore-rules \
+      -c "$REVIEWER_SESSION" --create-if-missing \
+      --query-file "$prompt_file" > "$out_file" 2>&1
   else
     opencode run --agent reviewer --file "$WORKDIR/context.txt" \
       "$(cat "$WORKDIR/review_instruction.txt")" > "$out_file" 2>&1
   fi
+}
+
+# chat 路径不写 session 的 cwd/git_repo_root（顶层 -z 的 oneshot 路径才写），
+# 派生的 reviewer 会话会因此掉进桌面端的 Home 桶而不是本仓库项目 —— 所以这里补一次归属。
+# 已知代价（审查意见提过，这里明确取舍）：这是直接写 Hermes 的 state.db，耦合了内部表结构；
+# Hermes 升级后可能失效（失效只会 warn，不会中断本轮），也没有官方入口可用
+# （`hermes project` 只有 create/add-folder/use/…，没有"把某个 session 归到项目"的子命令）。
+# 想完全不碰 Hermes 内部状态：FILE_REVIEWER_SESSION=0 关掉本段，跑完手动核对归属。
+file_reviewer_session() {
+  local sid="${1:-}"
+  [ "${FILE_REVIEWER_SESSION:-1}" = "1" ] || return 0
+  [ "$REVIEWER" = "hermes" ] || return 0
+  [ -n "$sid" ] || { warn "未能从 reviewer 输出里读到 session_id，跳过归属检查。"; return 0; }
+  "$PYBIN" - "$sid" "$REPO_ROOT" <<'PY' || warn "reviewer session 归属检查失败（不影响本轮审查结果）"
+import os
+import sqlite3
+import sys
+
+sid, repo = sys.argv[1], sys.argv[2]
+db = os.path.join(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"), "state.db")
+con = sqlite3.connect(db, timeout=15)
+con.execute("PRAGMA busy_timeout=8000")
+journal = con.execute("PRAGMA journal_mode").fetchone()[0]
+if str(journal).lower() != "wal":
+    print(f"    注意：state.db 的 journal_mode={journal}（非 WAL），与运行中的 Hermes 并发写有小概率抢锁。")
+row = con.execute("SELECT cwd, git_repo_root FROM sessions WHERE id = ?", (sid,)).fetchone()
+if row is None:
+    print(f"    session {sid} 不在 state.db 里，跳过归属检查。")
+    sys.exit(0)
+cwd, repo_root = (row[0] or ""), (row[1] or "")
+if cwd == repo and repo_root == repo:
+    sys.exit(0)
+con.execute(
+    "UPDATE sessions SET cwd = ?, git_repo_root = ?, git_metadata_generation = 0 WHERE id = ?",
+    (repo, repo, sid),
+)
+con.commit()
+after = con.execute("SELECT cwd, git_repo_root FROM sessions WHERE id = ?", (sid,)).fetchone()
+if after and after[0] == repo and after[1] == repo:
+    print(f"    reviewer session {sid} 已归位到 {repo}")
+else:
+    print(f"    归位写入未生效（回读得到 {after}），请手动核对。")
+    sys.exit(1)
+PY
+}
+
+# 兜底：剥掉 prompt 回显。reviewer 现在走 `hermes chat -Q`（quiet：只输出最终回答 + session_id），
+# 正常情况下根本不回显 prompt；万一回显回来了（换 CLI、换 reviewer），prompt 末行的哨兵带本轮
+# 随机 nonce，取「首次出现 nonce 之后」的内容即为模型回答。nonce 随机，diff/文档里不可能出现，
+# 所以不会被被审内容伪造；找不到 nonce（quiet 输出、opencode）时按原样返回全文。
+# 过滤器语义：从 stdin 读（与 sed 管道串联），不做参数解析。
+strip_prompt_echo() {
+  local nonce="${1:-}"
+  awk -v nonce="$nonce" -v marker="nonce=$nonce" '
+    { lines[NR] = $0 }
+    found == 0 && nonce != "" && index($0, marker) > 0 { found = NR }
+    END { for (i = found + 1; i <= NR; i++) print lines[i] }
+  '
 }
 
 # 从 reviewer 输出里抽取一行字段（容忍 ANSI 转义、前导空行、模型寒暄）
@@ -335,6 +410,9 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
     warn "找不到 $CAP_DIFF，本轮 diff 未做按文件裁剪。"
   fi
 
+  # 末行哨兵带一个本轮随机 nonce：reviewer 输出的 prompt 回显里它只可能出现一次，
+  # 而 diff/文档内容不可能造出这个随机串，所以"首次出现 nonce 之后"就是模型回答的可靠起点。
+  NONCE="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   {
     printf '===== 本次任务 =====\n%s\n\n' "$TASK"
     printf '===== 项目架构与阶段文档（审查依据）=====\n'
@@ -347,7 +425,7 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
     cat "$WORKDIR/diff_for_review.txt"
     printf '\n===== 本轮自动验收测试结果（命令: %s，结论: %s）=====\n' "$TEST_CMD" "$TESTS_STATE"
     cat "$WORKDIR/tests.txt"
-    printf '\n===== 以上为全部输入 =====\n'
+    printf '\n===== 以上为全部输入 nonce=%s =====\n' "$NONCE"
   } > "$WORKDIR/context.txt"
 
   {
@@ -364,6 +442,9 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
 第 3 行：LOG_NOTE: 一句话说清这一轮做了什么、卡在哪、要不要人管（中文，面向人类浏览）
 第 4 行起：空一行，再写详细意见。
 FMT
+    # 复用同一个会话会让上下文跨轮累积，这里显式要求只看本轮输入（防历史结论锚定这次判断）
+    printf '注意：如果你能看到本会话更早的审查记录，一律忽略——只依据这一次输入里的任务、架构文档、\n'
+    printf 'git diff 与测试结果判断，不要引用历史轮次的结论。\n'
     if [ "$TRUNCATED" = "yes" ]; then
       printf '注意：本轮 diff 因体积超限被截断，若关键上下文缺失请按你的规则明确指出缺少哪些文件。\n'
     fi
@@ -378,11 +459,27 @@ FMT
 
   # ---- 1.5 reviewer 审查 ---------------------------------------------------
   say "--- reviewer ($REVIEWER) 审查 ---"
+  if [ "$REVIEWER" = "hermes" ]; then
+    say "    session: ${REVIEWER_SESSION}（复用具名会话；上下文过长时由 Hermes 自动压缩）"
+  fi
   run_reviewer "$WORKDIR/review_prompt.txt" "$WORKDIR/review_raw.txt"
   REVIEW_RC=$?
 
-  # 去掉可能的前导噪声行，便于人工阅读
-  sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$WORKDIR/review_raw.txt" > "$WORKDIR/last_review.txt"
+  # 回显出现、却没有本轮 nonce 边界 = 无法可靠定位模型回答。宁可停下，也不要让 extract_field
+  # 去命中回显里的格式说明（那会把"本轮作废"伪装成一个看似正常的结论）。
+  if grep -qE '^Query: ' "$WORKDIR/review_raw.txt" && ! grep -q "nonce=${NONCE}" "$WORKDIR/review_raw.txt"; then
+    warn "reviewer 输出带 prompt 回显，但找不到本轮 nonce 边界（疑似 CLI 输出格式变了）。"
+    warn "原始输出：$WORKDIR/review_raw.txt"
+    exit 2
+  fi
+
+  # 去掉 ANSI 噪声与 prompt 回显，只留模型回答本体（便于人工阅读，
+  # 也避免把整份 prompt 当"审查意见"回灌给 builder）
+  sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$WORKDIR/review_raw.txt" \
+    | strip_prompt_echo "$NONCE" > "$WORKDIR/last_review.txt"
+
+  # -Q 输出里带一行 session_id：按 id 补归属比按标题猜会话更准
+  file_reviewer_session "$(extract_field session_id "$WORKDIR/last_review.txt")"
 
   STATUS="$(extract_field STATUS "$WORKDIR/last_review.txt")"
   COMMIT_MSG="$(extract_field COMMIT_MSG "$WORKDIR/last_review.txt")"

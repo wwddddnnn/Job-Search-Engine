@@ -74,10 +74,12 @@ git checkout -b feature/career-doc-upload
 5. **builder / reviewer 可插拔。** `BUILDER=codex|hermes`、`REVIEWER=hermes|opencode`。
    默认 `codex` + `hermes`。见下节「当前环境」。
 
-6. **reviewer 被物理限制为只读。** 用 `hermes -z -t vision --ignore-rules` 调用 Hermes 做审查：
+6. **reviewer 被物理限制为只读。** 用 `hermes chat -Q -t vision --ignore-rules -c <REVIEWER_SESSION>
+   --create-if-missing --query-file <prompt>` 调用 Hermes 做审查：
    `-t vision` 只注入 `vision_analyze` 一个工具，没有写文件、没有 bash、没有读文件能力，
    比原套件的 `tools: {write:false, edit:false, bash:false}` 更彻底；`--ignore-rules` 让它不吸入
-   本机的记忆/AGENTS.md，保证审查判断只依赖架构文档和 diff。
+   本机的记忆/AGENTS.md，保证审查判断只依赖架构文档和 diff；`-Q`（quiet）让输出只剩最终回答
+   加一行 `session_id`，不再回显整份 prompt（否则回显里的格式说明会和 STATUS 解析撞车）。
 
 7. **STATUS 解析健壮化。** 原脚本硬取输出第 1/2/3 行，模型但凡多一句寒暄、或 opencode 输出带
    ANSI/spinner 就会「格式读不懂」而中止。现在剥离 ANSI/CR，用正则找 `STATUS:` / `COMMIT_MSG:` /
@@ -90,13 +92,34 @@ git checkout -b feature/career-doc-upload
 9. **`git push -u origin`**（原为 `git push origin`，首次推送没有上游分支）；
    推送失败不再让脚本静默结束，而是明确提示 + 退出码 2。
 
-10. **reviewer 输入体积上限** `MAX_CONTEXT_KB`（默认 150）。Hermes `-z` 只接受命令行参数，
-    超出会撞参数长度上限；超限时截断 diff 并明确告知 reviewer「已截断，缺上下文请按规则说明」。
+10. **reviewer 输入体积上限** `MAX_CONTEXT_KB`（默认 300）。超限时按文件截断 diff，并明确告知
+    reviewer「已截断，缺上下文请按规则说明」。输入走 `--query-file`，不再把整份 prompt 当命令行
+    参数传递，因此不再受参数长度上限约束；这个上限只用来控制喂给 reviewer 的体量（成本与延迟）。
 
 11. **修了一个仓库原有的 flaky 测试**（非套件内容）：`tests/test_discovery.py` 用
     `ORDER BY received_at, id` 排序，而同一页两个 raw payload 共享 `received_at`、`id` 又是
     `uuid4()`，导致断言顺序随机，实测 **25 次里 11 次失败**。改为 `ORDER BY received_at, rowid`
     （rowid 才是写入顺序），25/25 通过。这是纯测试改动，未触碰产品代码。
+
+12. **reviewer 复用一个具名会话 + 归属补齐**（2026-09-17 追加。起因：每个切片跑一轮就新堆一个
+    reviewer session，S2–S5 期间堆了 5 个，且它们的 `cwd` 都是 NULL，在桌面端落到 Home 桶而不是
+    Job-Search-Engine 项目。）
+    - **复用**：`-c <REVIEWER_SESSION> --create-if-missing`（默认 `jse-reviewer`）。首次创建，之后
+      每轮 resume 同一会话；**换个名字即换一个干净会话**（重置上下文），例：
+      `REVIEWER_SESSION=jse-reviewer-2026q4 ./codex-hermes-loop.sh "..."`。
+    - **上下文长度**：跨轮累积由 Hermes 的自动压缩兜底（`~/.hermes/config.yaml` 的
+      `compression.enabled=true` / `threshold=0.5` / `target_ratio=0.2` / `protect_last_n=20`）；
+      同时 reviewer prompt 里显式写了「忽略会话历史，只依据本轮输入判断」，避免历史结论锚定本轮。
+    - **归属**：`hermes chat` 路径不写 session 的 `cwd`/`git_repo_root`（只有顶层 `-z` 的 oneshot
+      路径才写），所以脚本每轮按输出里的 `session_id` 直写 `~/.hermes/state.db` 补一次归属
+      （写前报 `journal_mode`、写后回读校验、不一致则非零退出并被 warn 捕获）。
+      `FILE_REVIEWER_SESSION=0` 可关掉这段（关掉后需手动核对归属）。这是**耦合 Hermes 内部表结构**
+      的临时兜底，Hermes 升级后需重新验证；失效表现 = 该会话出现在桌面端 Home 桶而非本项目。
+    - **实证**（`DRY_RUN=1` 演练，Hermes Agent v0.20.5 / upstream 64ea66b0，2026-09-17）：首轮创建
+      会话 → 次轮 resume 同一 session（消息数从 2 增到 4/6/8）→ `-Q` 输出能抽到
+      `session_id` / `STATUS` / `COMMIT_MSG` / `LOG_NOTE` → 剥离后 `last_review.txt` 无 prompt 回显
+      → 预置一个错误 `cwd`（`/Users/doriswu`）后该轮被自动纠正回本仓库 → `LOOP_EXIT=0`。
+      演练用的探针文件、临时分支、会话与 run 目录均已清理，未留在仓库历史里。
 
 ## 当前环境
 
@@ -105,7 +128,7 @@ git checkout -b feature/career-doc-upload
 | Python | `3.12.14`（`.venv/`，ruff 0.16.7 + mypy 2.3.1 已装） |
 | 测试 | `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests` → 10 tests OK |
 | builder: codex | **配额用尽**。走 ChatGPT 认证的 `codex exec` 返回 `You've hit your usage limit ... try again at Oct 11th, 2026 11:30 PM`。需要补额度或换 `OPENAI_API_KEY` |
-| reviewer: hermes | **可用**（deepseek），`hermes -z` 一次性模式 |
+| reviewer: hermes | **可用**（deepseek），`hermes chat -Q -c jse-reviewer --create-if-missing` 复用同一个会话 |
 | reviewer: opencode | 已装 1.15.13，但 `opencode auth list` 为 **0 credentials**，需 `opencode auth login` |
 | GitHub | `gh` 2.101.0 已装，**未登录**；`wwddddnnn/Job-Search-Engine` 匿名 API 返回 404（不存在或私有） |
 
