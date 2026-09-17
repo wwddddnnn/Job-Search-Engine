@@ -19,7 +19,7 @@
 #   BUILDER_CMD="..."           BUILDER=cmd 时执行的命令（在仓库根目录执行）
 #   REVIEWER=hermes|opencode    reviewer 实现，默认 hermes
 #   MAX_ATTEMPTS=3              最大循环轮数
-#   ARCH_DOCS="a.md b.md"       喂给 reviewer 的架构/阶段文档（空格分隔）
+#   ARCH_DOCS="a.md b.md"       喂给 reviewer 的架构/阶段文档（空格分隔；路径含空格时改用换行分隔）
 #   TEST_CMD="..."              每轮验收测试命令
 #   PYBIN=/path/to/python       验收测试用的解释器（也可写进仓库根的 dev.env）
 #   MAX_CONTEXT_KB=300          reviewer 输入上限，超出则按文件裁剪 diff（并列出未包含的文件）
@@ -57,6 +57,7 @@ DEFAULT_ARCH_DOCS=(
   "docs/phase0-foundation.md"
   "docs/phase1-job-discovery.md"
   "docs/phase2-career-foundation.md"
+  "docs/phase2.5-career-review-ui.md"
 )
 
 # Python 解释器：环境变量 PYBIN > 仓库根 dev.env > PATH 上的 python3
@@ -68,7 +69,15 @@ PYBIN="${PYBIN:-$(command -v python3 || true)}"
 DEFAULT_TEST_CMD="PYTHONPATH=src ${PYBIN} -m unittest discover -s tests -v"
 
 if [ -n "${ARCH_DOCS:-}" ]; then
-  read -r -a ARCH_FILES <<< "$ARCH_DOCS"
+  if [[ "$ARCH_DOCS" == *$'\n'* ]]; then
+    # 换行分隔：路径含空格时只能这么传（空格分隔会把 "docs/Job Search Assistant …md" 切碎）
+    ARCH_FILES=()
+    while IFS= read -r _arch_doc; do
+      [ -n "$_arch_doc" ] && ARCH_FILES+=("$_arch_doc")
+    done <<< "$ARCH_DOCS"
+  else
+    read -r -a ARCH_FILES <<< "$ARCH_DOCS"   # 旧的空格分隔写法，保持兼容
+  fi
 else
   ARCH_FILES=("${DEFAULT_ARCH_DOCS[@]}")
 fi
