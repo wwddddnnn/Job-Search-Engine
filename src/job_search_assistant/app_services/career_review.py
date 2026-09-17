@@ -13,7 +13,9 @@ from job_search_assistant.career.review_store import ReviewStore, ReviewTransact
 from job_search_assistant.career.types import CareerProfile
 from job_search_assistant.core.audit import AuditEvent
 from job_search_assistant.core.context import RequestContext
-from job_search_assistant.core.errors import ConflictError, NotFoundError, ValidationError
+from job_search_assistant.core.errors import (
+    ApplicationError, ConflictError, NotFoundError, ValidationError,
+)
 
 
 @dataclass(slots=True)
@@ -126,16 +128,22 @@ class CareerReviewService:
 
     def preview_publication(
         self, *, draft_id: str, expected_version: int, base_version_id: str | None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         """Read-only summary bound to a saved draft/base; publication rechecks both."""
-        draft = self.get_draft(draft_id=draft_id)
-        draft.check_version(expected_version)
-        profile = self.store.get_review_profile(draft.profile_id)
-        self._check_base(draft, profile, base_version_id)
-        base = self.store.get_review_base_facts(base_version_id) if base_version_id else None
-        publication = prepare_publication(draft, base, allow_empty=True)
-        return {"draft_id": draft_id, "draft_version": expected_version,
-                "base_version_id": base_version_id, "summary": publication.summary}
+        try:
+            draft = self.get_draft(draft_id=draft_id)
+            draft.check_version(expected_version)
+            profile = self.store.get_review_profile(draft.profile_id)
+            self._check_base(draft, profile, base_version_id)
+            base = self.store.get_review_base_facts(base_version_id) if base_version_id else None
+            publication = prepare_publication(draft, base, allow_empty=True)
+            return {"draft_id": draft_id, "draft_version": expected_version,
+                    "base_version_id": base_version_id, "summary": publication.summary}
+        except ApplicationError as exc:
+            if context is not None:
+                exc.with_correlation_id(context.correlation_id)
+            raise
 
     def publish(
         self, *, draft_id: str, expected_version: int, base_version_id: str | None,

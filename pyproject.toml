@@ -16,6 +16,10 @@ job-search-assistant = "job_search_assistant.__main__:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+"job_search_assistant.adapters.web" = ["static/*.html", "static/*.css", "static/js/*.js",
+                                      "static/js/views/*.js"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

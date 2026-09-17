@@ -20,7 +20,8 @@ Job Search Assistant：本地优先的个人求职助手，模块化单体，当
   - `src/job_search_assistant/career/` — **Phase 2 正在实现的领域层**（types / ports / store / extraction）
   - `src/job_search_assistant/infrastructure/{sqlite,files}/` — SQLite 与受控文件存储实现
   - `src/job_search_assistant/app_services/` — 跨领域应用服务与启动装配
-  - `applications/`、`matching/` — 后续阶段的预留位置，**当前不要在这些目录里实现业务逻辑**
+  - `src/job_search_assistant/adapters/web/` — **Phase 2.5 的本地 HTTP 入口与静态页面**（页面资源放其下 `static/`）
+  - `src/job_search_assistant/{applications,matching}/` — 后续阶段的预留位置，**当前不要在这些目录里实现业务逻辑**
   - `migrations/` — 有序、校验和保护的迁移
   - `docs/` — 架构与阶段设计说明
 
@@ -39,6 +40,8 @@ Job Search Assistant：本地优先的个人求职助手，模块化单体，当
    需要改 schema 时**新增** `NNNN_description.sql`，不要编辑旧文件。破坏性 schema 变更要先停下问人。
 3. **依赖方向不能反。** `core` 不得 import 任何领域模块或 SQLite；领域模块只能依赖 `core` 的抽象和自身 port；
    领域代码不得 import `infrastructure/sqlite` 的具体实现。上层（adapter/UI）不得直接读模块内部字段。
+   **HTTP/UI adapter 不得直连数据库、也不得调用 store 内部写接口**，只能经 `app_services` 的应用服务与已定义契约；
+   页面资源只放 `adapters/web/static/`，**不引前端框架、不连 CDN、不要求 Node.js 或前端构建**，DOM 操作只出现在 view 模块。
 4. **原始数据不可被覆盖。** Provider 原始响应／每个职位的 raw JSON 必须原样留存并可回放，
    规范化、去重、合并都不得改写或丢弃原始记录本身。
 5. **不绕过状态机。** 审批／确认类流程不得跳过必经状态，不得允许非法跃迁。
@@ -51,7 +54,7 @@ Job Search Assistant：本地优先的个人求职助手，模块化单体，当
 每次工具调用都会重发全部上下文，所以**调用次数是最贵的成本**。实测一轮 S3 消耗 260–470 万 input tokens，其中相当一部分是逐文件 `cat`/`sed` 造成的。
 
 1. **合并读取**：要看多个文件就用**一条**命令读完（`sed -n '1,400p' a.py b.py c.py`，或 `for f in ...; do ...; done`），不要一个文件一条命令。
-2. **先扫后读**：先用一次 `grep -rn` / `rg --files` 定位，再只读相关片段，不要先通读整棵源码树。
+2. **先扫后读**：先用一次 `grep -rn` 定位，再只读相关片段，不要先通读整棵源码树。
 3. **合并验证**：自测、`git diff --check`、行宽检查放在**同一条**命令里跑，不要拆成三次。
 4. **不重复确认**：已经确认过的事实，不要换个命令再确认一遍。
 
