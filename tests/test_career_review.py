@@ -54,6 +54,16 @@ class CareerReviewTests(unittest.TestCase):
         self.snapshot = GetCareerProfileSnapshot(self.career)
         self.pack = GetVerifiedEvidencePack(self.career)
 
+    def test_preview_error_context_and_legacy_behavior(self):
+        for supplied in ({}, {"context": self.context}):
+            with self.assertRaises(ConflictError) as caught:
+                self.service.preview_publication(
+                    draft_id=self.draft.id, expected_version=self.draft.version + 1,
+                    base_version_id=None, **supplied,
+                )
+            self.assertEqual(self.context.correlation_id if supplied else None,
+                             caught.exception.correlation_id)
+
     def command(self):
         self.counter += 1
         return {"context": self.context, "idempotency_key": f"key-{self.counter}"}

@@ -73,7 +73,7 @@ class CareerFoundationMigrationTestCase(unittest.TestCase):
         )
         versions = self.services.database.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
         self.assertEqual(
-            ["0001", "0002", "0003", "0004", "0005"],
+            ["0001", "0002", "0003", "0004", "0005", "0006"],
             [str(row["version"]) for row in versions],
         )
 

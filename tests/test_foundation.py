@@ -47,7 +47,7 @@ class FoundationTestCase(unittest.TestCase):
         self.assertTrue({"schema_migrations", "idempotency_records", "audit_events"}.issubset(table_names))
         migrations = self.services.database.fetch_all("SELECT version FROM schema_migrations")
         self.assertEqual(
-            ["0001", "0002", "0003", "0004", "0005"],
+            ["0001", "0002", "0003", "0004", "0005", "0006"],
             [str(row["version"]) for row in migrations],
         )
 

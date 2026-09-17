@@ -95,21 +95,82 @@ PYTHONPATH=src "$PYBIN" -m unittest discover -s tests
 PYTHONPATH=src python -m job_search_assistant --database /tmp/x.sqlite init-db   # ✅
 ```
 
-- 测试**不访问网络、LLM、MCP 或浏览器**。
+- 测试**不访问外部网络、LLM、MCP 或浏览器**；HTTP 测试仅使用本机 loopback。
 - 取 `dev.env` 里的路径时别用 `grep PYBIN dev.env`（注释里也有 `PYBIN=`），要用 `grep '^PYBIN=' dev.env`。
 
-### 4. 本地 UI（Phase 2.5 S2a 交付中）
+### 4. 本地启动（S2a）
+
+在仓库根使用项目**既有 Conda 环境**，无需创建新环境，**不需要 Node.js、不需要前端构建**：
 
 ```bash
-PYTHONPATH=src python -m job_search_assistant serve --port 8000
+PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/python -m job_search_assistant serve --port 8000 --host 127.0.0.1
 ```
 
-单进程标准库服务，只绑 `127.0.0.1`，Ctrl-C 停止；端口被占用时错误信息会提示换 `--port`。
+打开 **http://127.0.0.1:8000/**，在终端按 **Ctrl-C** 停止，正常返回 0。
+也可先 `source dev.env`，再运行 `PYTHONPATH=src "$PYBIN" -m job_search_assistant serve`。
+服务只接受 `127.0.0.1`；端口占用时打印明确错误并返回 1，改用 `--port 8001` 后重新启动。
+`--port 0` 可分配空闲端口，终端会打印实际地址。静态资源全部随项目提供，不连接 CDN。
 
-> **S2a 还没收口，暂时不要把它当成可用产品**：今天能跑起来的是 JSON API
-> （`/api/session`、`/api/documents`、`/api/profile`、`/api/draft`、`/api/settings/ui`）加上写请求的
-> `X-JSA-Token` + `Host` 双重校验；页面静态资源尚未落地，访问 `/` 会返回 404。
-> S2a 验收后，本节会按 Phase 2.5 验收标准第 1 条给出完整的三条信息：**一条启动命令、访问地址、停止方法**。
+数据库与迁移沿用上文默认值，`--database` / `--migrations` 仍放在 `serve` 之前。
+文档保存在数据库同目录的 `documents/`，导入临时文件位于 `incoming/`，请求结束后清理；
+默认均在 `.job-search-assistant/` 内。界面语言、文档和草稿重启后保留。
+已有多个档案时，本地单用户界面固定打开创建时间最早的档案；此切片没有档案切换功能。
+
+S2a 支持 Markdown 导入、多文档只读浏览、中英文、渲染/源码切换、打开或创建审核草稿。
+不提供选区建条目、编辑、确认、删除、撤销、自动保存或发布按钮；这些属于 S2b。
+Markdown 支持标题、段落、列表、强调、链接和围栏代码块子集，不承诺完整 CommonMark；
+源码视图显示完整原文，界面语言不改变简历内容。
+
+#### S2a 人工验收
+
+1. 用新的独立数据库启动（例如全局参数 `--database /tmp/jsa-s2a-check/app.sqlite`），
+   不清空已有 `.job-search-assistant/` 或演练库。首页应同时显示「还没有文档」和
+   「尚无已发布档案」，可继续导入；不能显示数据损坏或失败。
+2. 点击「打开审核草稿」，应显示草稿已保存与版本号，仍显示未发布档案的正常空状态。
+   导入两份不同的 UTF-8 `.md`，点击列表来回切换，检查文件名、时间、状态与正文对应。
+3. 切换中英文，文案立即切换，原文不翻译；切换渲染/源码，检查标题、列表、强调、链接、
+   代码块，以及源码的空行、空格和完整内容。切语言不重建正文，已有正文选区应保留。
+4. 切换到英文后 Ctrl-C 停止，再用同一数据库启动；语言、文档列表和审核草稿应恢复。
+   刷新后可重新选择任一文档；当前文档与渲染/源码选项仅为会话状态。
+5. 导入包含下列内容的 `injection-check.md`（仅用于本地检查）：
+
+   ````markdown
+   # Injection check
+   <script>alert('script')</script>
+   [unsafe](javascript:alert(1))
+   <img src=x onerror="alert('onerror')">
+   [safe](https://example.com)
+   **强调** 和 *斜体*
+   - 列表
+   ```text
+   <script>alert('code')</script>
+   ```
+   ````
+
+   渲染视图里原始 HTML 应显示为文字；内联 `<script>`、`javascript:` 链接和 `onerror=`
+   属性都不应生效，不弹窗、不生成原文指定的图片、不执行脚本。源码视图应完整保留上述文本。
+   安全链接允许 `http` / `https` / `mailto`；其余协议不产生可点击链接。
+6. 导入非 `.md`、非 UTF-8 文件或超限文件应出现相应语言的错误提示；导入失败保留待重试内容。
+   刷新前请先确认服务端已返回导入成功。服务重启后旧页面写请求会被 token 校验拒绝，刷新即可。
+
+#### S2a HTTP 契约
+
+- `GET /api/session` 返回 `{token, language, profile}`，无档案时 `profile=null`。
+- `GET /api/documents` 返回 `{id, filename, imported_at, status}` 列表；
+  `GET /api/documents/{id}` 在相同字段外返回 `content` 原文。
+- `POST /api/documents` 接受 `{filename, content, idempotency_key}`，返回
+  `{document_id, status}`。同键同输入重放，相同键不同输入返回 409。
+- `GET /api/profile` 返回快照；尚无档案时为 `null`，已创建但未发布时
+  `version=0`、`profile_version_id=null`，不将存储故障吞成空档案。
+- `GET /api/draft` 返回草稿或 `null`；`POST /api/draft` 接受可选的
+  `{display_name, idempotency_key}`，仅打开或创建草稿。
+- `GET /api/settings/ui` 返回 `{language}`；`PUT` 接受 `{language, idempotency_key?}`。
+  语言仅限 `zh` / `en`。草稿创建和设置写入未提供幂等键时，由 adapter 生成请求级键。
+- 写请求带 `X-JSA-Token`，所有请求校验 `Host`。请求体为 JSON，最大 **2 MiB（含 JSON 开销）**；
+  未知字段拒绝。错误只返回 `{error: {code, message, correlation_id}}`，页面按 code 翻译。
+
+自动测试用标准库真实 loopback HTTP 端口与 `urllib.request`，不访问外部网络。
+运行环境必须允许绑定 `127.0.0.1:0`；限制 socket 的沙箱无法完成这部分验收，不能据此标记通过。
 
 ## 每个阶段的 DoD（完成定义）
 
@@ -281,7 +342,7 @@ src/job_search_assistant/
 └── matching/           # Job Matching 领域（后续阶段）
 
 migrations/             # 有序、校验和保护的 SQLite 迁移（新增迁移，绝不改旧文件）
-tests/                  # 标准库 unittest 测试（不访问网络）
+tests/                  # 标准库 unittest 测试（HTTP 仅访问本机 loopback）
 docs/                   # 架构与各阶段设计说明
 scripts/                # 开发辅助脚本
 codex-hermes-loop.sh    # builder + reviewer 循环编排

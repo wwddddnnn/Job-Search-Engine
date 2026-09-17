@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Career / 职业档案</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/js/views/app.js"></script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">JOB SEARCH ASSISTANT</p><h1 data-i18n="title">职业档案</h1></div>
+    <label><span data-i18n="language">界面语言</span>
+      <select id="language">
+        <option value="zh">中文</option><option value="en">English</option></select>
+    </label>
+  </header>
+  <section class="status" aria-live="polite">
+    <p id="profile-status"></p><p id="draft-status"></p>
+    <button id="open-draft" data-i18n="openDraft">打开审核草稿</button>
+  </section>
+  <p id="error" role="alert" hidden></p>
+  <main>
+    <aside>
+      <h2 data-i18n="documents">简历文档</h2>
+      <label class="import"><span data-i18n="import">导入 Markdown</span>
+        <input id="file" type="file" accept=".md" aria-label="导入 Markdown">
+      </label>
+      <p class="hint" data-i18n="importHint">UTF-8 .md · 请求上限 2 MB</p>
+      <p id="import-status" role="status"></p>
+      <button id="retry-import" data-i18n="retry" hidden>重试导入</button>
+      <p id="no-documents" data-i18n="noDocuments">还没有文档。导入一份 Markdown 简历开始浏览。</p>
+      <ul id="documents"></ul>
+    </aside>
+    <section class="reader">
+      <div class="reader-bar">
+        <h2 id="document-title"></h2>
+        <div role="group" aria-label="文档视图" id="view-switch">
+          <button id="rendered-tab" data-i18n="rendered" aria-pressed="true">渲染</button>
+          <button id="source-tab" data-i18n="source" aria-pressed="false">源码</button>
+        </div>
+      </div>
+      <p id="reader-empty" data-i18n="selectDocument">选择左侧文档，或导入一份新简历。</p>
+      <article id="rendered"></article>
+      <pre id="source" hidden></pre>
+    </section>
+  </main>
+  <footer data-i18n="scope">当前支持导入与只读浏览，经历整理与发布将在后续提供。</footer>
+</body>
+</html>
