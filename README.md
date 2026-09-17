@@ -24,7 +24,7 @@ S2b / S3 / S4 待开始。**
 | **Phase 0 基础层** | 模块边界、校验和保护的 SQLite 迁移、错误模型、RequestContext、幂等、审计 | ✅ 已验收 |
 | **Phase 1 Job Discovery** | SearchConfig 持久化、JobsPipe Provider 适配、分页搜索运行、原始响应留存、规范化、同 source 去重、不可变 job snapshot | ✅ 已验收 |
 | **Phase 2 Career Foundation** | 迁移 0004 + `career/` 领域层、受控文件存储、纯文本提取器、导入 / 抽取 / 确认 / 证据包 / 快照五个应用服务 | ✅ S1–S5 全部验收 |
-| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | ✅ S1、S2a 已通过审查 / S2b、S3、S4 待开始 |
+| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a 已通过审查 / S2b、S3、S4 待开始 |
 | **B 步 真实 LLM** | 接入真实 provider（当前只有确定性假 provider） | ⏳ 待开始 |
 | **Phase 3 Job Matching** | MatchingPolicy、hard filter、shortlist、MatchRun / Result、失效重算 | ⏳ 未开始 |
 | **Phase 4–7** | Application Core、Agent-ready Contracts、MCP Adapter、受控浏览器投递 | ⏳ 未开始 |
