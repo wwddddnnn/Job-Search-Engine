@@ -81,6 +81,8 @@ class SQLiteReviewStore:
 
 
 class _SQLiteReviewTransaction:
+    # SQLiteCareerStore private helpers are a same-layer internal contract, not a
+    # delivery-adapter API. CareerStore internal refactors must update this reuse.
     def __init__(self, store: SQLiteReviewStore, connection: sqlite3.Connection) -> None:
         self.store = store
         self.connection = connection
@@ -163,6 +165,8 @@ class _SQLiteReviewTransaction:
     def get_facts(self, version_id: str) -> ProfileVersionFacts:
         # Immutable facts can be read on the existing Career read port. The command
         # transaction holds the writer lock and has checked the current pointer.
+        # WAL permits this separate reader of committed, immutable version facts.
+        # This path must remain read-only: no writes or dependency on uncommitted data.
         return self.store._career.get_profile_version_facts(profile_version_id=version_id)
 
     def require_document(self, document_id: str) -> None:

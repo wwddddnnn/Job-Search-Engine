@@ -1,8 +1,9 @@
 # Phase 2.5 人工整理与核验 UI
 
-状态：需求已讨论确认，待实现。更新日期：2026-09-17。
+状态：S1 后端契约已实现，当前进行审查收尾；S2–S4 待实现。更新日期：2026-09-17。
 
-本文记录用户确认的产品行为；实现切片是建议顺序，不表示功能已经交付。
+本文记录用户确认的产品行为；切片按建议顺序交付，已实现范围以文末 S1 后端契约为准，
+其余切片尚未交付。
 
 ## 目标与范围
 
@@ -138,18 +139,27 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 - `create_item` / `edit_item` / `delete_item` / `restore_item`：创建、修改、软删除和撤销删除。
   子项通过稳定的 `parent_id` 归属经历。编辑和撤销删除后必须重新确认。
 - `decide_item(decision=confirm|reject|clarify|confirm_delete)`：只核验指定条目；
+  已确认且之后未修改的条目重复 `confirm` 不改变条目内容、确认时间或 dirty 状态，
+  不额外产生发布变更；已发布且未修改的条目不进入发布摘要、不因此产生新档案版本。
+  首次确认后尚未发布的变更仍保留；命令仍按既有保存规则递增草稿版本并记录审计。
+  编辑后仍必须重新确认，才能进入发布摘要。
   `confirm_delete` 仅适用于已软删除条目，普通 `confirm` 不能确认删除。
 - 所有条目写操作携带 `draft_id`、`expected_version`、`context`、`idempotency_key`。
   返回的 `ReviewDraft.version` 是本次已持久化版本；旧版本保存返回 `ConflictError`。
 - `preview_publication(draft_id, expected_version, base_version_id)` 为只读预览，
-  返回新增、修改、删除清单。`publish` 使用同一组版本参数并携带 context / 幂等键，
+  返回新增、修改、删除清单；无可发布变更时三个列表均为空，不抛异常。
+  即使摘要为空，expected_version 仍须匹配已保存草稿版本，base_version_id 仍须同时
+  匹配草稿基础版本和当前档案版本，
+  不一致返回 `ConflictError`。空变更的 `publish` 仍返回 `ValidationError`，不生成版本。
+  `publish` 使用同一组版本参数并携带 context / 幂等键，
   在事务内重新检查版本，返回新档案版本、草稿快照和实际发布摘要。
 
 `base_version_id=None` 明确表示此前没有发布版本。发布后草稿版本也递增，未确认编辑保留，
 它们的已发布事实引用推进到新版本的旧表述副本。新的已确认子项若父经历尚未发布，则继续
 等待；已有事实不会因未确认编辑、拒绝、待澄清或尚未确认的软删除而消失。
 确认删除整段经历表示移除该经历及其已发布子项，预览和发布摘要逐项列出这些删除；
-子项编辑内容仍保留在审核草稿中。撤销父经历删除后可以继续整理并逐项确认。
+子项从新发布版本移除，编辑内容仍保留在审核草稿中，`published_id` 置空。
+撤销父经历删除后可以继续整理并逐项确认。
 
 来源使用 `ReviewSource(document_id, DraftEvidence(...))`，新建来源必须含
 `source_locator`（例如 `offset:9:26`，以调用方选中的不可变文档文本为坐标）；已有 Phase 2
@@ -157,6 +167,17 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 确认发布后沿用 `ExperienceEvidence`，无文档依据的事实使用 `user_assertion`。
 0005 为现有 evidence 增加可选 `experience_skill_id`，使手工技能自己的来源与父经历来源
 可区分；旧 Phase 2 数据继续支持原有经历级证据回退。
+`experience_skill_id` 当前仅表示技能级证据归属，手工技能不借用父经历来源，
+不承担更细粒度 claim→evidence 语义；Phase 3/4 如有此需求，须另行设计并新增迁移。
+
+草稿的已发布引用缺失或类型不一致返回 `ConflictError(code=conflict)`；版本事实内部
+技能或父经历引用损坏返回 `InfrastructureError(code=infrastructure_error)`，不泄漏
+`KeyError` / `StopIteration`。
+
+`SQLiteReviewStore` 对 `SQLiteCareerStore` 私有加载/写入方法的复用属于同层内部契约，
+CareerStore 内部重构须同步审阅 adapter；这不是 UI/HTTP 可调用的公开接口。
+`tx.get_facts` 借助 WAL 从独立读连接读取已提交、不可变的版本事实，外层事务持有写锁并
+检查当前版本指针。该路径只读、不得写入、不得依赖未提交数据。
 
 保存结果只在事务提交后返回；事务包含业务变更、`career.review.*` 审计与幂等完成记录。
 失败全部回滚，相同输入与幂等键可重试。已完成请求重试返回原始响应（包括原草稿版本），

@@ -19,7 +19,9 @@ from job_search_assistant.career.extraction import DraftEvidence, EXTRACTION_DRA
 from job_search_assistant.career.types import CareerProfile, ExperienceFactConfirmation
 from job_search_assistant.career.review import ReviewDraft, ReviewSource
 from job_search_assistant.core import ConflictError, InfrastructureError, RequestContext
-from job_search_assistant.core.errors import InvalidStateError, NotFoundError, ValidationError
+from job_search_assistant.core.errors import (
+    ApplicationError, InvalidStateError, NotFoundError, ValidationError,
+)
 from job_search_assistant.infrastructure.files import (
     DeterministicCareerExtractionProvider, FileSystemDocumentStorage, PlainTextResumeExtractor,
 )
@@ -231,13 +233,30 @@ class CareerReviewTests(unittest.TestCase):
     def test_experience_delete_lists_descendants_and_empty_published_version_is_valid(self):
         exp = self.add()
         child = self.add("achievement", {"action_text": "Outcome"}, exp)
-        for item in (exp, child):
+        skill = self.add("skill", {"raw_skill_name": "Python"}, exp)
+        for item in (exp, child, skill):
             self.decide(item)
         first = self.publish()
         self.delete(exp)
         self.decide(exp, "confirm_delete")
         result = self.publish()
-        self.assertEqual({exp, child}, {i["item_id"] for i in result["summary"]["deleted"]})
+        self.assertEqual({exp, child, skill},
+                         {i["item_id"] for i in result["summary"]["deleted"]})
+        saved = self.service.get_draft(draft_id=self.draft.id)
+        for item_id in (child, skill):
+            item = next(i for i in saved.items if i.id == item_id)
+            self.assertIsNone(item.published_id)
+            self.assertEqual(exp, item.parent_id)
+            self.assertFalse(item.deleted)
+        self.assertEqual("Outcome", next(i for i in saved.items if i.id == child)
+                         .fields["action_text"])
+        self.assertEqual("Python", next(i for i in saved.items if i.id == skill)
+                         .fields["raw_skill_name"])
+        facts = self.career.get_profile_version_facts(
+            profile_version_id=result["profile_version_id"],
+        )
+        self.assertEqual((), facts.achievements)
+        self.assertEqual((), facts.experience_skills)
         snapshot = self.snapshot.execute(profile_id="profile")
         self.assertEqual((), snapshot.experiences)
         self.assertEqual(2, snapshot.version)
@@ -388,6 +407,110 @@ class CareerReviewTests(unittest.TestCase):
                 changes={"role": "changed"}, idempotency_key="invalid-context",
                 context=replace(self.context, correlation_id=""),
             )
+
+    def preview(self):
+        return self.service.preview_publication(
+            draft_id=self.draft.id, expected_version=self.draft.version,
+            base_version_id=self.draft.base_version_id,
+        )
+
+    def test_empty_preview_and_repeated_confirm_do_not_create_publication_changes(self):
+        empty = {"added": [], "modified": [], "deleted": []}
+        self.assertEqual(empty, self.preview()["summary"])
+        exp = self.add()
+        child = self.add("achievement", {"action_text": "Outcome"}, exp)
+        skill = self.add("skill", {"raw_skill_name": "Python"}, exp)
+        self.assertEqual(empty, self.preview()["summary"])
+        for item in (exp, child, skill):
+            self.decide(item)
+        confirmed = self.draft.items
+        for item in (exp, child, skill):
+            self.decide(item)
+        self.assertEqual(confirmed, self.draft.items)
+        self.assertEqual(3, len(self.preview()["summary"]["added"]))
+        self.publish()
+        published = self.draft.items
+        for item in (exp, child, skill):
+            self.decide(item)
+        self.assertEqual(published, self.draft.items)
+        self.assertTrue(all(not item.dirty for item in self.draft.items))
+        self.assertEqual(empty, self.preview()["summary"])
+        with self.assertRaises(ValidationError):
+            self.publish()
+        self.assertEqual(1, len(self.database.fetch_all("SELECT * FROM profile_versions")))
+        self.edit(exp, role="Changed role")
+        self.assertEqual("draft", self.draft.items[0].status)
+        self.assertEqual(empty, self.preview()["summary"])
+        self.decide(exp)
+        self.assertEqual([exp], [i["item_id"] for i in self.preview()["summary"]["modified"]])
+        self.publish()
+        self.assertEqual("Changed role", self.snapshot.execute(
+            profile_id="profile",
+        ).experiences[0].role)
+
+    def test_preview_rejects_base_mismatch_even_with_empty_changes(self):
+        exp = self.add()
+        self.decide(exp)
+        first = self.publish()
+        self.edit(exp, role="Second role")
+        self.decide(exp)
+        self.publish()
+        for base_id in (None, "unknown", first["profile_version_id"]):
+            with self.subTest(base_id=base_id), self.assertRaises(ConflictError):
+                self.service.preview_publication(
+                    draft_id=self.draft.id, expected_version=self.draft.version,
+                    base_version_id=base_id,
+                )
+        # Caller agrees with the draft, but another publication moved the profile pointer.
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE career_profiles SET current_version_id = ? WHERE id = 'profile'",
+                (first["profile_version_id"],),
+            )
+        with self.assertRaises(ConflictError):
+            self.preview()
+        # Caller agrees with the current profile, but not the draft base.
+        with self.assertRaises(ConflictError):
+            self.service.preview_publication(
+                draft_id=self.draft.id, expected_version=self.draft.version,
+                base_version_id=first["profile_version_id"],
+            )
+
+    def test_missing_published_references_are_application_errors(self):
+        exp = self.add()
+        child = self.add("achievement", {"action_text": "Outcome"}, exp)
+        skill = self.add("skill", {"raw_skill_name": "Python"}, exp)
+        for item in (exp, child, skill):
+            self.decide(item)
+        self.publish()
+        facts = self.career.get_profile_version_facts(profile_version_id=self.draft.base_version_id)
+        for field in ("experiences", "achievements", "experience_skills", "skills"):
+            with self.subTest(field=field), patch.object(
+                self.store._career, "get_profile_version_facts",
+                return_value=replace(facts, **{field: ()}),
+            ):
+                for operation in (self.preview, self.publish):
+                    with self.assertRaises(ApplicationError) as caught:
+                        operation()
+                    self.assertIsInstance(caught.exception, (ConflictError, InfrastructureError))
+                    self.assertIn(caught.exception.code, ("conflict", "infrastructure_error"))
+                self.assertEqual(self.context.correlation_id, caught.exception.correlation_id)
+        self.assertEqual(1, len(self.database.fetch_all("SELECT * FROM profile_versions")))
+
+    def test_missing_skill_evidence_association_is_a_coded_conflict(self):
+        from job_search_assistant.career.review_publication import item_evidence
+
+        exp = self.add()
+        skill = self.add("skill", {"raw_skill_name": "Python"}, exp)
+        self.decide(exp)
+        self.decide(skill)
+        self.publish()
+        facts = self.career.get_profile_version_facts(profile_version_id=self.draft.base_version_id)
+        item = next(i for i in self.draft.items if i.id == skill)
+        with self.assertRaises(ApplicationError) as caught:
+            item_evidence(item, replace(facts, experience_skills=(), evidence=()))
+        self.assertIsInstance(caught.exception, ConflictError)
+        self.assertEqual("conflict", caught.exception.code)
 
     def test_preview_is_read_only_and_bound_to_both_saved_versions(self):
         exp = self.add()

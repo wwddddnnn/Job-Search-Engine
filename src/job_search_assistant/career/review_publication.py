@@ -14,7 +14,7 @@ from job_search_assistant.career.types import (
     EvidenceSourceType, Experience, ExperienceAchievement, ExperienceEvidence,
     ExperienceSkill, ProfileVersion, Skill, VerificationStatus, require_verified_profile_facts,
 )
-from job_search_assistant.core.errors import ConflictError, ValidationError
+from job_search_assistant.core.errors import ConflictError, InfrastructureError, ValidationError
 
 
 def item_evidence(item: ReviewItem, facts: ProfileVersionFacts) -> tuple[ExperienceEvidence, ...]:
@@ -24,7 +24,11 @@ def item_evidence(item: ReviewItem, facts: ProfileVersionFacts) -> tuple[Experie
         specific = tuple(e for e in facts.evidence if e.experience_skill_id == item.published_id)
         if specific:
             return specific
-        association = next(s for s in facts.experience_skills if s.id == item.published_id)
+        association = next(
+            (s for s in facts.experience_skills if s.id == item.published_id), None,
+        )
+        if association is None:
+            raise ConflictError("The published skill association is missing from the base.")
         experience_id = association.experience_id
     else:
         experience_id = item.published_id
@@ -51,7 +55,12 @@ def seed_items(facts: ProfileVersionFacts) -> tuple[ReviewItem, ...]:
             fields = {name: getattr(fact, name) for name in FIELDS[kind]
                       if name != "canonical_name"}
             if kind is ReviewItemKind.SKILL:
-                fields["canonical_name"] = skills[fact.skill_id].canonical_name
+                skill = skills.get(fact.skill_id)
+                if skill is None:
+                    raise InfrastructureError("A published skill association references no skill.")
+                fields["canonical_name"] = skill.canonical_name
+            if kind is not ReviewItemKind.EXPERIENCE and fact.experience_id not in parent_ids:
+                raise InfrastructureError("A published child references no experience.")
             item = ReviewItem(
                 id=parent_ids[fact.id] if kind is ReviewItemKind.EXPERIENCE else str(uuid4()),
                 kind=kind, fields=fields,
@@ -80,7 +89,7 @@ class ReviewPublication:
 
 
 def prepare_publication(
-    draft: ReviewDraft, base: ProfileVersionFacts | None,
+    draft: ReviewDraft, base: ProfileVersionFacts | None, *, allow_empty: bool = False,
 ) -> ReviewPublication:
     """Overlay confirmed changes only; unconfirmed modifications retain baseline facts."""
     if (base.profile_version.id if base else None) != draft.base_version_id:
@@ -96,7 +105,7 @@ def prepare_publication(
     }
     for item in draft.items:
         old = baseline.get(item.published_id)
-        if item.published_id is not None and old is None:
+        if item.published_id is not None and (old is None or old.kind is not item.kind):
             raise ConflictError("A draft item no longer belongs to its base version.")
         confirmed = item.dirty and item.status is VerificationStatus.VERIFIED
         if item.id in deleted_parents or item.parent_id in deleted_parents:
@@ -128,7 +137,7 @@ def prepare_publication(
         changes[category] = [
             entry for entry in changes[category] if entry["item_id"] not in blocked
         ]
-    if not any(changes.values()):
+    if not allow_empty and not any(changes.values()):
         raise ValidationError("There are no confirmed publishable changes.")
     now = datetime.now(UTC)
     version = ProfileVersion(
@@ -148,16 +157,23 @@ def prepare_publication(
         common = dict(id=fact_id, verification_status=VerificationStatus.VERIFIED, created_at=now)
         if key not in applied:
             if item.kind is ReviewItemKind.EXPERIENCE:
-                experiences.append(replace(
-                    old_experiences[item.published_id], id=fact_id, profile_version_id=version.id,
-                ))
+                old = old_experiences.get(item.published_id)
+                if old is None:
+                    raise ConflictError("The published experience is missing from the base.")
+                experiences.append(replace(old, id=fact_id, profile_version_id=version.id))
             elif item.kind is ReviewItemKind.ACHIEVEMENT:
-                achievements.append(replace(
-                    old_achievements[item.published_id], id=fact_id, experience_id=parent_id,
-                ))
+                old = old_achievements.get(item.published_id)
+                if old is None:
+                    raise ConflictError("The published achievement is missing from the base.")
+                achievements.append(replace(old, id=fact_id, experience_id=parent_id))
             else:
-                old = old_associations[item.published_id]
-                skills.append(old_skills[old.skill_id])
+                old = old_associations.get(item.published_id)
+                if old is None:
+                    raise ConflictError("The published skill association is missing from the base.")
+                skill = old_skills.get(old.skill_id)
+                if skill is None:
+                    raise InfrastructureError("A published skill association references no skill.")
+                skills.append(skill)
                 associations.append(replace(old, id=fact_id, experience_id=parent_id))
         elif item.kind is ReviewItemKind.EXPERIENCE:
             experiences.append(Experience(**common, profile_version_id=version.id, **item.fields))

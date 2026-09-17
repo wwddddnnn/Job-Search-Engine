@@ -133,7 +133,7 @@ class CareerReviewService:
         profile = self.store.get_review_profile(draft.profile_id)
         self._check_base(draft, profile, base_version_id)
         base = self.store.get_review_base_facts(base_version_id) if base_version_id else None
-        publication = prepare_publication(draft, base)
+        publication = prepare_publication(draft, base, allow_empty=True)
         return {"draft_id": draft_id, "draft_version": expected_version,
                 "base_version_id": base_version_id, "summary": publication.summary}
 

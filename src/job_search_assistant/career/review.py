@@ -145,6 +145,8 @@ class ReviewItem:
         }
         if decision not in statuses:
             raise ValidationError("Unknown review decision.")
+        if decision == "confirm" and self.status is VerificationStatus.VERIFIED:
+            return self
         return replace(
             self, status=statuses[decision], dirty=True,
             confirmed_at=now if decision == "confirm" else None,
