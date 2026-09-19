@@ -43,3 +43,18 @@ footer { margin-top: 24px; }
   main { grid-template-columns: 1fr; }
   .reader-bar { flex-wrap: wrap; }
 }
+
+main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.left-column { min-width: 0; }
+.left-column aside { margin-bottom: 16px; }
+#documents { display: flex; flex-wrap: wrap; gap: 8px; }
+#editor { background: white; padding: 20px; border: 1px solid #dce4d9; border-radius: 10px; }
+.edit-card { border-top: 1px solid #dce4d9; padding: 18px 0; }
+#editor label { display: block; margin: 10px 0; }
+#editor label span { display: block; font-size: 13px; margin-bottom: 4px; }
+#editor input, #editor textarea { width: 100%; font: inherit; padding: 8px;
+  border: 1px solid #b7c8bb; border-radius: 4px; }
+#editor textarea { min-height: 90px; resize: vertical; }
+#editor button { margin: 4px; }
+#editor p { overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }

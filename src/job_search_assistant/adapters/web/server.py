@@ -164,10 +164,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return service.document(path.rsplit("/", 1)[1])
             if path == "/api/profile":
                 return service.profile()
+            if path == "/api/profile/versions":
+                return service.history()
+            if path.startswith("/api/profile/versions/") and path.count("/") == 4:
+                return service.profile(path.rsplit("/", 1)[1])
             if path == "/api/draft":
                 return service.draft()
             if path == "/api/settings/ui":
                 return service.settings()
+        if (self.command == "POST" and path.startswith("/api/review/")
+                and path.count("/") == 3):
+            return service.review_command(path.rsplit("/", 1)[1], body, context=self.context)
         if self.command == "POST" and path == "/api/documents":
             self._fields(body, ("filename", "content", "idempotency_key"))
             filename = body["filename"]

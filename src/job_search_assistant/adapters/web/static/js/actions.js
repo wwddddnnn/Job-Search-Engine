@@ -1,3 +1,4 @@
+import {loadEditor} from "./editor-actions.js";
 import {request, APIError, isStale, invalidate} from "./api.js";
 import {getState, update} from "./state.js";
 let pendingImport = null;
@@ -18,11 +19,12 @@ export async function initialize() {
       request("/documents"), request("/draft"),
     ]);
     update({documents, draft, ready: true});
+    loadEditor(draft);
     if (documents.length) await selectDocument(documents[0].id);
   } catch (error) { failed(error); }
 }
 export async function selectDocument(id) {
-  update({selectedId: id, document: null, loading: true, error: null});
+  update({selectedId: id, document: null, loading: true, error: null, selection: null});
   try {
     const document = await request(`/documents/${encodeURIComponent(id)}`, {latest: "document"});
     update({document, loading: false});
@@ -54,6 +56,7 @@ export async function openDraft() {
     }});
     const profile = await request("/profile");
     update({draft, profile});
+    loadEditor(draft);
   } catch (error) { failed(error); }
   finally { update({busy: false}); }
 }
