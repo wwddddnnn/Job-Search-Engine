@@ -73,7 +73,8 @@ export function editorView() {
       controls[action] = button(actions, action, () => operate(action, {item_id: item.id}));
     }
     if (item.kind === "experience") {
-      controls.achievement = button(actions, "addAchievement", () => compose("achievement", item.id));
+      controls.achievement = button(actions, "addAchievement",
+        () => compose("achievement", item.id));
       controls.skill = button(actions, "addSkill", () => compose("skill", item.id));
     }
     return {node, title, progress, inputs, source, controls};
@@ -88,7 +89,8 @@ export function editorView() {
     status.textContent = t(state.language, state.composer && writer.clean ? "unsaved" :
       state.saveStatus || "unsaved") + (state.saveError ? " · " +
         t(state.language, state.saveError.code) : "");
-    retry.hidden = !state.saveError; retry.disabled = writer.running;
+    retry.hidden = !state.saveError || state.saveError.code === "conflict";
+    retry.disabled = writer.running;
     const composer = state.composer;
     if (!composer) { composerRoot.replaceChildren(); composerNode = null; }
     else {
@@ -100,7 +102,9 @@ export function editorView() {
         composerNode = {inputs, save, cancel};
       }
       Object.values(composerNode.inputs).forEach(input => {
-        input.disabled = locked && state.saveError?.code !== "validation_error";
+        const conflict = state.saveError?.code === "conflict";
+        input.readOnly = conflict;
+        input.disabled = locked && !conflict && state.saveError?.code !== "validation_error";
       });
       composerNode.save.disabled = locked; composerNode.cancel.disabled = locked;
     }

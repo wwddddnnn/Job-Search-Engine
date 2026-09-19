@@ -8,7 +8,8 @@ export class SaveQueue {
   load(draft) { this.draft = draft; this.status = draft ? "saved" : "unsaved"; this.emit(); }
   emit() { this.notify(this); }
   enqueue(action, payload) {
-    // A rejected validation has no side effects. Correcting it is a new command.
+    // Validation made no write: discard only the rejected edit, retain the corrected payload,
+    // and allocate a new idempotency key because its input differs from the failed command.
     if (this.failure?.code === "validation_error" && action === "edit" &&
         this.queue[0]?.payload.item_id === payload.item_id) {
       this.queue.shift(); this.failure = null;

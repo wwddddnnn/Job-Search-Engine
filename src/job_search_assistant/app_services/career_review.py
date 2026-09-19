@@ -144,7 +144,7 @@ class CareerReviewService:
                                 for item in seed_items(publication.facts)]}
         except ApplicationError as exc:
             if context is not None:
-                exc.with_correlation_id(context.correlation_id)
+                raise exc.with_correlation_id(context.correlation_id)
             raise
 
     def publish(

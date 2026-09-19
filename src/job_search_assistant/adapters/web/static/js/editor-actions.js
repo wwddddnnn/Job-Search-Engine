@@ -72,6 +72,7 @@ export function compose(kind, parent_id = null) {
 }
 export function changeComposer(fields) {
   if (writer.failure?.code === "validation_error" && writer.queue[0]?.action === "create") {
+    // Validation made no write. Keep corrected text; createItem assigns a fresh command key.
     writer.queue.shift(); writer.failure = null; writer.status = "saved"; writer.emit();
   }
   update({composer: {...getState().composer, fields}});

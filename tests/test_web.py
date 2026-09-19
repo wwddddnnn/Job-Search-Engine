@@ -355,6 +355,61 @@ class WebTests(unittest.TestCase):
         self.assert_error(self.review("edit", saved, item_id="missing", changes={"role": "B"}),
                           404, "not_found")
 
+    def test_review_non_object_body_is_validation_error(self):
+        self.assert_error(self.request("/api/review/create", method="POST",
+                                       body=[{"a": 1}]), 422, "validation_error")
+
+    def test_review_write_guards_cover_new_prefix(self):
+        cases = [
+            ({"X-JSA-Token": None}, 403, "authorization_error"),
+            ({"X-JSA-Token": "wrong"}, 403, "authorization_error"),
+            ({"Host": "evil.example"}, 403, "authorization_error"),
+            ({"Content-Type": "text/plain"}, 415, "unsupported_media_type"),
+            ({"Content-Length": str(MAX_BODY + 1)}, 413, "payload_too_large"),
+        ]
+        for headers, status, code in cases:
+            with self.subTest(headers=headers):
+                self.assert_error(self.request("/api/review/create", method="POST",
+                                               raw=b"{}", headers=headers), status, code)
+        self.assertIsNone(self.request("/api/draft")[1])
+
+    def test_review_conflict_copy_reload_resave_and_publish(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        fields = {"organization": "Copied organization", "role": "Copied role"}
+        saved = self.review("create", draft, kind="experience",
+                            fields={"organization": "Other tab", "role": "Engineer"})[1]
+        self.assert_error(self.review("create", draft, kind="experience", fields=fields,
+                                      idempotency_key="failed-create"), 409, "conflict")
+        latest = self.request("/api/draft")[1]
+        self.assertEqual(saved, latest)
+        status, recovered, _ = self.review("create", latest, kind="experience", fields=fields,
+                                           idempotency_key="after-refresh")
+        self.assertEqual(200, status)
+        self.assertEqual(fields["role"], recovered["items"][-1]["fields"]["role"])
+        recovered = self.review("decide", recovered, item_id=recovered["items"][-1]["id"],
+                                decision="confirm")[1]
+        self.assertEqual(200, self.review("preview", recovered, base_version_id=None)[0])
+        self.assertEqual(200, self.review("publish", recovered, base_version_id=None)[0])
+
+    def test_review_http_reject_clarify_and_edit_require_reconfirmation(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        draft = self.review("create", draft, kind="experience",
+                            fields={"organization": "A", "role": "B"})[1]
+        item_id = draft["items"][0]["id"]
+        for decision, expected in (("reject", "rejected"), ("clarify", "needs_clarification")):
+            draft = self.review("decide", draft, item_id=item_id, decision=decision)[1]
+            self.assertEqual(expected, draft["items"][0]["status"])
+            self.assertEqual([], self.review("preview", draft, base_version_id=None)[1]["content"])
+            self.assertEqual(draft, self.request("/api/draft")[1])
+        draft = self.review("decide", draft, item_id=item_id, decision="confirm")[1]
+        self.assertEqual("verified", draft["items"][0]["status"])
+        draft = self.review("edit", draft, item_id=item_id, changes={"role": "Edited"})[1]
+        self.assertEqual("draft", draft["items"][0]["status"])
+        self.assertEqual([], self.review("preview", draft, base_version_id=None)[1]["content"])
+        draft = self.review("decide", draft, item_id=item_id, decision="confirm")[1]
+        self.assertEqual("Edited", self.review("preview", draft, base_version_id=None)
+                         [1]["content"][0]["fields"]["role"])
+
     def test_host_binding_and_cli_shutdown(self):
         with self.assertRaises(ValueError):
             LocalHTTPServer(("0.0.0.0", 0), self.service, incoming_dir=self.root / "incoming")

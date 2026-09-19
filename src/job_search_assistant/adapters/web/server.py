@@ -94,7 +94,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if (len(tokens) != 1 or not tokens[0].isascii()
                         or not secrets.compare_digest(tokens[0], self.server.token)):
                     raise HTTPProblem(403, "authorization_error", "Write token is required.")
-                body = self._body()
+                body = self._body(review_command=path.startswith("/api/review/"))
             if path == "/api" or path.startswith("/api/"):
                 self._json(200, self._route(path, body))
             elif self.command == "GET":
@@ -114,7 +114,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             self._error(500, "infrastructure_error", "Operation failed.")
 
-    def _body(self):
+    def _body(self, *, review_command=False):
         if self.headers.get("Transfer-Encoding"):
             raise HTTPProblem(400, "bad_request", "Transfer encoding is not supported.")
         lengths = self.headers.get_all("Content-Length", [])
@@ -136,7 +136,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 object_pairs_hook=_unique_object)
         except (ValueError, UnicodeError, RecursionError, TimeoutError):
             raise HTTPProblem(400, "bad_request", "Invalid JSON body.") from None
-        if not isinstance(result, dict):
+        # Review DTO shape errors belong to the application service (422); keep older routes
+        # on their existing malformed-body contract (400).
+        if not isinstance(result, dict) and not review_command:
             raise HTTPProblem(400, "bad_request", "JSON body must be an object.")
         return result
 

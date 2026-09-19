@@ -76,6 +76,8 @@ class LocalUIService:
 
     def review_command(self, action, payload, *, context):
         """Validate the UI command DTO before dispatching to transactional review services."""
+        if not isinstance(payload, dict):
+            raise ValidationError("Review command must be an object.")
         shapes = {
             "create": ({"kind", "fields"}, {"parent_id", "selection"}),
             "edit": ({"item_id", "changes"}, set()),

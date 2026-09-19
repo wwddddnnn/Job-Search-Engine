@@ -1,9 +1,10 @@
 # Phase 2.5 人工整理与核验 UI
 
-状态：S1、S2a 已交付并通过审查；S2b–S4 未开始。更新日期：2026-09-17。
+状态：S1、S2a 已交付并通过审查；S2b 已交付，本轮审查修补通过后提交；S3–S4 未开始。
+更新日期：2026-09-19。
 
 本文记录用户确认的产品行为；切片按建议顺序交付，S1、S2a 已交付并通过审查，
-已实现范围见文末 S1 与 S2a 契约；S2b–S4 未开始。
+S2b 已交付，本轮审查修补通过后提交。已实现范围见文末 S1、S2a 与 S2b 契约；S3–S4 未开始。
 
 ## 目标与范围
 
@@ -125,11 +126,11 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 
 | 切片 | 内容 | 可人工检查的结果 |
 |---|---|---|
-| S1 | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 通过测试验证重启恢复、未确认事实隔离和历史不可变 |
-| S2a | stdlib 本地启动入口（单命令 + README 启动/地址/停止）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、模块化原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染/源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染/源码 → 重启后仍在 |
-| S2b | 双栏编辑：选区创建条目（带 locator）、编辑/核验/拒绝/待澄清/删除/撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
-| S3 | 多配置管理、引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
-| S4 | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
+| S1（已交付） | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 通过测试验证重启恢复、未确认事实隔离和历史不可变 |
+| S2a（已交付） | stdlib 本地启动入口（单命令 + README 启动/地址/停止）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、模块化原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染/源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染/源码 → 重启后仍在 |
+| S2b（已交付，本轮审查通过后提交） | 双栏编辑：选区创建条目（带 locator）、编辑/核验/拒绝/待澄清/删除/撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
+| S3（未开始） | 多配置管理、引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
+| S4（未开始） | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
 
 ## 验收标准
 
@@ -147,7 +148,7 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 
 ## S1 与 S2a 契约（已交付并通过审查）
 
-下文说明 S1 审核服务；S2a 启动入口、人工验收与 HTTP 契约见 [README 第 4 节](../README.md#4-本地启动s2a)。
+下文说明 S1 审核服务；S2a 启动入口、人工验收与 HTTP 契约见 [README 第 4 节](../README.md#4-本地启动s2a--s2b)。
 
 装配：`CareerReviewService(store=SQLiteReviewStore(foundation.database))`。
 公开类型由 `career` 导出；应用服务和 SQLite 实现分别由 `app_services` 与
@@ -183,7 +184,8 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 撤销父经历删除后可以继续整理并逐项确认。
 
 来源使用 `ReviewSource(document_id, DraftEvidence(...))`，新建来源必须含
-`source_locator`（例如 `offset:9:26`，以调用方选中的不可变文档文本为坐标）；已有 Phase 2
+`source_locator`（S2b 使用 `codepoint:9:26`，以不可变文档文本的 Unicode 码点为坐标，
+从 0 起、左闭右开；不使用含糊的 `offset` 前缀）；已有 Phase 2
 档案的 excerpt-only 引用也会保留。待发布引用以内嵌引用值保存于草稿，不建立平行证据表。
 确认发布后沿用 `ExperienceEvidence`，无文档依据的事实使用 `user_assertion`。
 0005 为现有 evidence 增加可选 `experience_skill_id`，使手工技能自己的来源与父经历来源
@@ -210,3 +212,46 @@ CareerStore 内部重构须同步审阅 adapter；这不是 UI/HTTP 可调用的
 空经历列表；已发布的合法空版本返回实际版本 ID / 版本号和空列表。不存在的 profile
 仍为 `NotFoundError`，存储错误不转成空状态。`GetVerifiedEvidencePack` 继续拒绝无可信事实
 的档案，且不会读取审核草稿。
+
+
+## S2b 契约（已交付，本轮审查通过后提交）
+
+人工验收、启动方式见 [README 第 4 节](../README.md#4-本地启动s2a--s2b)。
+S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
+
+- `GET /api/profile/versions`：`{id, version, created_at}` 列表，按版本倒序；无版本返回 `[]`。
+- `GET /api/profile/versions/<id>`：指定不可变档案快照。history 选择只改变展示的 snapshot，
+  不替换当前 profile、不写草稿或档案。
+- `POST /api/review/<action>`：共有 `draft_id`、`expected_version`；除 preview 外均要求
+  `idempotency_key`。HTTP 生成 context（actor、correlation ID），由应用服务执行事务。
+  顶层非对象、未知/缺失字段返回 `ValidationError` / 422；非法 JSON 为 400。
+- create：`kind`、`fields`，可选 `parent_id`、`selection`；edit：`item_id`、`changes`；
+  decide：`item_id`、`decision=confirm|reject|clarify|confirm_delete`；delete/restore：
+  `item_id`。以上返回已保存草稿（含 version、items、sources 和状态）。
+- selection：`{document_id, start, end}`，以 GET document 返回的完整原文为基准，
+  Unicode 码点、0 起、左闭右开。reader 将 DOM UTF-16 下标转换为码点；后端校验范围并
+  生成 `source_locator="codepoint:start:end"` 与原文摘录，保留 CRLF、emoji 等原始内容。
+- preview：接受 `base_version_id`，公开返回 `{draft_id, draft_version, base_version_id,
+  summary, content}`。**`content` 是新增公开字段**，为 `{kind, fields}` 列表，表示本次
+  实际发布的全部内容（含保留的旧事实），不是仅有变更摘要；summary 的 added/modified/deleted
+  列表描述本次变更。preview 只读，空变更可预览，空变更不能 publish。
+- publish：同样接受 `base_version_id`，返回 `{draft, profile_version_id, version, summary}`。
+  重新检查已保存草稿与档案基础版本。失败重试保持原 publication 请求及同一幂等键，
+  取消预览或开始新编辑才废弃该请求；有未保存输入/composer 时 editor-actions 阻止预览和发布。
+- 修改已确认内容立即显示待核验，保存后仍须重新确认；reject/clarify 不使新事实进入发布内容。
+  无已发布档案、尚无草稿、草稿无条目分别展示未发布提示、创建草稿提示和手工填写引导。
+
+### 冲突恢复取舍：选择 B
+
+采用成本较低且可测试的「复制后刷新」：冲突不自动合并、不自动改 expected_version 重发。
+失败 composer 保留全部字段，使用 readonly 而非 disabled，允许聚焦选中复制；已有条目编辑
+也保留未保存文字。冲突隐藏原样重试按钮，中英文指引均要求先复制所有未保存字段，再刷新
+读取最新草稿，对照后重新粘贴、保存、确认与发布。新页面产生新的幂等键并使用最新草稿版本。
+普通网络失败仍原样重试。没有静默丢弃队列；刷新是用户在复制后的显式操作，未复制文字不会
+跨刷新自动恢复。此方案避免引入 A 所需的额外重载、冲突合并和队列变基状态。
+
+JS 测试通过全新 JavaScriptCore 上下文模拟刷新，验证冲突输入可复制、最新版本重新保存成功
+并解除预览门控；HTTP 测试验证冲突、GET 最新草稿、新键保存及发布完整链路。
+逻辑测试依赖 **macOS 系统 JavaScriptCore，非 darwin 平台会静默 skip**（unittest 显示 skipped）。
+view 测试只用最小 DOM 夹具验证事件与渲染分支，不代表真实浏览器验收；双向选区、输入法组合
+输入、粘贴大段文本必须按 README 人工操作，不能声称已被自动测试覆盖。

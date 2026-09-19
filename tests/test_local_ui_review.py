@@ -69,3 +69,13 @@ class LocalReviewTests(unittest.TestCase):
         self.command("create", kind="experience", fields={"organization": "A", "role": "B"})
         with self.assertRaises(ConflictError):
             self.command("preview", base_version_id="stale")
+
+    def test_review_command_requires_top_level_object(self):
+        for payload in ([{"a": 1}], [], None, "text", 42):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                self.service.review_command("create", payload, context=self.context)
+
+    def test_preview_error_retains_request_correlation(self):
+        with self.assertRaises(ConflictError) as caught:
+            self.command("preview", expected_version=999, base_version_id=None)
+        self.assertEqual(self.context.correlation_id, caught.exception.correlation_id)
