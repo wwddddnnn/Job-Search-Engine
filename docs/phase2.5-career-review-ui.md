@@ -231,6 +231,7 @@ S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
 - selection：`{document_id, start, end}`，以 GET document 返回的完整原文为基准，
   Unicode 码点、0 起、左闭右开。reader 将 DOM UTF-16 下标转换为码点；后端校验范围并
   生成 `source_locator="codepoint:start:end"` 与原文摘录，保留 CRLF、emoji 等原始内容。
+  历史证据行保留原来的 `offset:…` 形式，不做迁移或清洗；新写入统一用 `codepoint:start:end`。
 - preview：接受 `base_version_id`，公开返回 `{draft_id, draft_version, base_version_id,
   summary, content}`。**`content` 是新增公开字段**，为 `{kind, fields}` 列表，表示本次
   实际发布的全部内容（含保留的旧事实），不是仅有变更摘要；summary 的 added/modified/deleted
@@ -240,6 +241,12 @@ S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
   取消预览或开始新编辑才废弃该请求；有未保存输入/composer 时 editor-actions 阻止预览和发布。
 - 修改已确认内容立即显示待核验，保存后仍须重新确认；reject/clarify 不使新事实进入发布内容。
   无已发布档案、尚无草稿、草稿无条目分别展示未发布提示、创建草稿提示和手工填写引导。
+
+
+composer 在冲突、认证失败、网络失败、保存中或待保存时只读，仍可聚焦、选中和复制；
+校验失败仍允许编辑改错。发布期间输入禁用，已删除条目输入仍禁用。
+冲突或保存失败时可点「取消」收起 composer，输入与保存队列保留；点「展开未保存条目」
+可再次展开，收起不会解除预览/发布门控。发布期间不能收起。
 
 ### 冲突恢复取舍：选择 B
 

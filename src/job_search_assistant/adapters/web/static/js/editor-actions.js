@@ -68,7 +68,8 @@ export function compose(kind, parent_id = null) {
   const text = selection?.text || "";
   const fields = kind === "experience" ? {organization: "", role: "", summary: text} :
     kind === "achievement" ? {action_text: text} : {raw_skill_name: text};
-  update({composer: {kind, parent_id, fields, selection: selection?.locator || null}});
+  update({composerHidden: false,
+    composer: {kind, parent_id, fields, selection: selection?.locator || null}});
 }
 export function changeComposer(fields) {
   if (writer.failure?.code === "validation_error" && writer.queue[0]?.action === "create") {
@@ -83,4 +84,8 @@ export function createItem() {
   operate("create", composer);
   // Keep the composer until persistence succeeds, including on a failed create.
 }
-export function cancelComposer() { if (writer.clean) update({composer: null}); }
+export function cancelComposer() {
+  if (getState().publishing) return;
+  if (writer.clean) update({composer: null, composerHidden: false});
+  else update({composerHidden: true});
+}

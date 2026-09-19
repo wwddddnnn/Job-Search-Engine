@@ -355,6 +355,13 @@ class WebTests(unittest.TestCase):
         self.assert_error(self.review("edit", saved, item_id="missing", changes={"role": "B"}),
                           404, "not_found")
 
+    def test_real_three_mib_body_returns_readable_413(self):
+        # urllib writes the complete body before reading: a premature close raises BrokenPipe.
+        self.assert_error(self.request("/api/review/create", method="POST",
+                                       raw=b" " * (3 * 1024 * 1024)),
+                          413, "payload_too_large")
+        self.assertIsNone(self.request("/api/draft")[1])
+
     def test_review_non_object_body_is_validation_error(self):
         self.assert_error(self.request("/api/review/create", method="POST",
                                        body=[{"a": 1}]), 422, "validation_error")

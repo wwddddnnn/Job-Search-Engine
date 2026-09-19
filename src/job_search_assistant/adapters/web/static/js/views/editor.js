@@ -48,6 +48,7 @@ export function editorView() {
     update({selection: null}); window.getSelection()?.removeAllRanges();
   });
   const add = button(toolbar, "newExperience", () => compose("experience"));
+  const resume = button(toolbar, "resumeComposer", () => update({composerHidden: false}));
   const status = element("p", root); status.setAttribute("role", "status");
   const retry = button(root, "retrySave", retrySave);
   const composerRoot = element("section", root);
@@ -92,6 +93,9 @@ export function editorView() {
     retry.hidden = !state.saveError || state.saveError.code === "conflict";
     retry.disabled = writer.running;
     const composer = state.composer;
+    composerRoot.hidden = !!state.composerHidden;
+    resume.hidden = !composer || !state.composerHidden;
+    resume.disabled = state.publishing;
     if (!composer) { composerRoot.replaceChildren(); composerNode = null; }
     else {
       if (!composerNode) {
@@ -102,11 +106,10 @@ export function editorView() {
         composerNode = {inputs, save, cancel};
       }
       Object.values(composerNode.inputs).forEach(input => {
-        const conflict = state.saveError?.code === "conflict";
-        input.readOnly = conflict;
-        input.disabled = locked && !conflict && state.saveError?.code !== "validation_error";
+        input.readOnly = locked && state.saveError?.code !== "validation_error";
+        input.disabled = !!state.publishing;
       });
-      composerNode.save.disabled = locked; composerNode.cancel.disabled = locked;
+      composerNode.save.disabled = locked; composerNode.cancel.disabled = !!state.publishing;
     }
     const items = state.editItems || state.draft?.items || [];
     // Stable keyed forms: only field values that differ are touched, never reinsert focused nodes.

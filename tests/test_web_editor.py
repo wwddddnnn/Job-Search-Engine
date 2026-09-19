@@ -191,11 +191,55 @@ class EditorActionViewTests(JavaScriptTests):
         self.assertEqual("0", self.evaluate("calls.length"))
         self.assertEqual("true", self.evaluate('byKey("previewPublish").disabled'))
 
+    def test_composer_locked_inputs_remain_copyable_and_can_collapse(self):
+        for code in ("conflict", "authorization_error", "network_error"):
+            with self.subTest(code=code):
+                self.setUp()
+                self.evaluate('''
+                    compose("experience");
+                    const roleInput = document.querySelector("#editor")
+                      .querySelectorAll("input")[1];
+                    roleInput.value = "retained"; roleInput.listeners.input();
+                ''')
+                self.evaluate('createItem();')
+                self.evaluate(f'calls[0].reject({{code: "{code}"}});')
+                self.assertEqual("true", self.evaluate(
+                    'document.querySelector("#editor").querySelectorAll("input")'
+                    '.every(input => input.readOnly && !input.disabled)'))
+                self.assertEqual("false", self.evaluate('byKey("cancel").disabled'))
+                self.evaluate('byKey("cancel").listeners.click();')
+                self.assertEqual("true", self.evaluate('byKey("cancel").parentElement.hidden'))
+                self.assertEqual("retained", self.evaluate('getState().composer.fields.role'))
+                self.assertEqual("1", self.evaluate('writer.queue.length'))
+                self.assertEqual("true", self.evaluate('byKey("previewPublish").disabled'))
+                self.evaluate('byKey("resumeComposer").listeners.click();')
+                self.assertEqual("false", self.evaluate('byKey("cancel").parentElement.hidden'))
+                self.assertEqual("retained", self.evaluate(
+                    'document.querySelector("#editor").querySelectorAll("input")[1].value'))
+
+    def test_composer_pending_saving_and_publishing_gates(self):
+        self.evaluate('compose("experience"); writer.enqueue("create", getState().composer);')
+        for action in ('', 'writer.flush();'):
+            self.evaluate(action or 'writer.emit();')
+            self.assertEqual("true", self.evaluate(
+                'document.querySelector("#editor").querySelectorAll("input")'
+                '.every(input => input.readOnly && !input.disabled)'))
+        self.evaluate('update({publishing: true});')
+        self.assertEqual("true", self.evaluate(
+            'document.querySelector("#editor").querySelectorAll("input")'
+            '.every(input => input.disabled)'))
+        self.assertEqual("true", self.evaluate('byKey("cancel").disabled'))
+        self.evaluate('cancelComposer();')
+        self.assertEqual("false", self.evaluate('byKey("cancel").parentElement.hidden'))
+
     def test_composer_validation_correction_uses_new_key(self):
         self.evaluate('''
             compose("experience"); createItem();
             calls[0].reject({code: "validation_error"});
         ''')
+        self.assertEqual("true", self.evaluate(
+            'document.querySelector("#editor").querySelectorAll("input")'
+            '.every(input => !input.readOnly && !input.disabled)'))
         self.evaluate('changeComposer({organization: "A", role: "corrected"}); createItem();')
         self.assertEqual("false", self.evaluate(
             "calls[0].body.idempotency_key === calls[1].body.idempotency_key"))

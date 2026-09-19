@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import secrets
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
@@ -124,6 +125,25 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise HTTPProblem(413, "payload_too_large", "Request exceeds 2 MB.")
         length = int(lengths[0])
         if length > MAX_BODY:
+            # Bound both bytes and total time; draining lets write-then-read clients see 413.
+            self.close_connection = True
+            if length <= 2 * MAX_BODY:
+                deadline = time.monotonic() + 1
+                remaining = length
+                try:
+                    while remaining:
+                        budget = deadline - time.monotonic()
+                        if budget <= 0:
+                            break
+                        self.connection.settimeout(budget)
+                        chunk = self.rfile.read1(min(remaining, 64 * 1024))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                except (TimeoutError, ConnectionError):
+                    pass
+                finally:
+                    self.connection.settimeout(10)
             raise HTTPProblem(413, "payload_too_large", "Request exceeds 2 MB.")
         types = self.headers.get_all("Content-Type", [])
         if len(types) != 1 or types[0].split(";", 1)[0].strip().lower() != "application/json":
