@@ -16,15 +16,15 @@
 
 ## 现在开发到哪了
 
-**当前在 Phase 2.5「人工整理与核验 UI」，S1 与 S2a 已通过审查，
-S2b / S3 / S4 待开始。**
+**当前在 Phase 2.5「人工整理与核验 UI」，S1、S2a 与 S2b 已通过审查，
+S3 / S4 待开始。**
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **Phase 0 基础层** | 模块边界、校验和保护的 SQLite 迁移、错误模型、RequestContext、幂等、审计 | ✅ 已验收 |
 | **Phase 1 Job Discovery** | SearchConfig 持久化、JobsPipe Provider 适配、分页搜索运行、原始响应留存、规范化、同 source 去重、不可变 job snapshot | ✅ 已验收 |
 | **Phase 2 Career Foundation** | 迁移 0004 + `career/` 领域层、受控文件存储、纯文本提取器、导入 / 抽取 / 确认 / 证据包 / 快照五个应用服务 | ✅ S1–S5 全部验收 |
-| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a 已通过审查 / S2b、S3、S4 待开始 |
+| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a、S2b 已通过审查 / S3、S4 待开始 |
 | **B 步 真实 LLM** | 接入真实 provider（当前只有确定性假 provider） | ⏳ 待开始 |
 | **Phase 3 Job Matching** | MatchingPolicy、hard filter、shortlist、MatchRun / Result、失效重算 | ⏳ 未开始 |
 | **Phase 4–7** | Application Core、Agent-ready Contracts、MCP Adapter、受控浏览器投递 | ⏳ 未开始 |
@@ -118,7 +118,7 @@ PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/
 
 S2a 支持 Markdown 导入、多文档只读浏览、中英文、渲染/源码切换、打开或创建审核草稿。
 S2b 已交付选区建条目、编辑、确认、拒绝、待澄清、删除、撤销、自动保存、预览发布与历史版本。
-本轮审查修补待通过审查后提交；S3 / S4 尚未开始。
+S2b 的审查修补已通过并提交；S3 / S4 尚未开始。
 Markdown 支持标题、段落、列表、强调、链接和围栏代码块子集，不承诺完整 CommonMark；
 源码视图显示完整原文，界面语言不改变简历内容。
 
@@ -200,7 +200,7 @@ Markdown 支持标题、段落、列表、强调、链接和围栏代码块子�
 - `POST /api/review/<action>`：action 为 `create` / `edit` / `decide` / `delete` /
   `restore` / `preview` / `publish`。共有 `draft_id`、`expected_version`；除只读 preview
   外必须提供 `idempotency_key`。业务参数及返回值见
-  [S2b 契约](docs/phase2.5-career-review-ui.md#s2b-契约已交付本轮审查通过后提交)。
+  [S2b 契约](docs/phase2.5-career-review-ui.md#s2b-契约已交付并通过审查)。
 - preview 接受 `base_version_id`，返回 `{draft_id, draft_version, base_version_id,
   summary, content}`；`content` 是本次实际发布内容的 `{kind, fields}` 列表，包含保留的旧事实，
   `summary` 为新增/修改/删除列表。publish 仍须单独调用并再次校验版本。
@@ -299,7 +299,7 @@ API key。详见 [docs/phase1-job-discovery.md](docs/phase1-job-discovery.md)。
 |---|---|---|
 | S1 ✅ | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 测试验证重启恢复、未确认事实隔离、历史不可变 |
 | S2a ✅ | 启动入口（单命令 + README 三条信息）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染 / 源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染 / 源码 → 重启后仍在 |
-| S2b ✅（审查修补待提交） | 双栏编辑：选区创建条目（带 locator）、编辑 / 核验 / 拒绝 / 待澄清 / 删除 / 撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
+| S2b ✅ 已通过审查 | 双栏编辑：选区创建条目（带 locator）、编辑 / 核验 / 拒绝 / 待澄清 / 删除 / 撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
 | S3 ⏳ | 多配置管理、引用 / prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
 | S4 ⏳ | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
 
