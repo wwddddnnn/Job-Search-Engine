@@ -67,6 +67,9 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._handle()
 
+    def do_DELETE(self):
+        self._handle()
+
     def do_PUT(self):
         self._handle()
 
@@ -95,7 +98,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if (len(tokens) != 1 or not tokens[0].isascii()
                         or not secrets.compare_digest(tokens[0], self.server.token)):
                     raise HTTPProblem(403, "authorization_error", "Write token is required.")
-                body = self._body(review_command=path.startswith("/api/review/"))
+                body = self._body(review_command=path.startswith(("/api/review/", "/api/llm/")))
             if path == "/api" or path.startswith("/api/"):
                 self._json(200, self._route(path, body))
             elif self.command == "GET":
@@ -176,6 +179,22 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _route(self, path, body):
         service = self.server.service
+        if path == "/api/llm/configs":
+            if self.command == "GET":
+                return service.llm.configs()
+            if self.command == "POST":
+                return service.llm.command("create", body, context=self.context)
+        if path == "/api/llm/selection":
+            if self.command == "GET":
+                return service.llm.selection()
+            if self.command == "PUT":
+                return service.llm.command("select", body, context=self.context)
+        if path.startswith("/api/llm/configs/") and path.count("/") == 4:
+            action = {"PUT": "update", "DELETE": "delete"}.get(self.command)
+            if action:
+                return service.llm.command(
+                    action, body, config_id=path.rsplit("/", 1)[1], context=self.context,
+                )
         if self.command == "GET":
             if path == "/api/session":
                 return {"token": self.server.token, **service.settings(),

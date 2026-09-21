@@ -58,3 +58,11 @@ main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start;
 #editor button { margin: 4px; }
 #editor p { overflow-wrap: anywhere; white-space: pre-wrap; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+#llm-configs { margin: 1rem; }
+#llm-configs form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+#llm-configs form[hidden] { display: none; }
+#llm-configs label { display: flex; flex-direction: column; }
+#llm-configs li { margin: .5rem 0; overflow-wrap: anywhere; }
+#llm-configs button { margin: .25rem; }
+#llm-configs [hidden] { display: none; }

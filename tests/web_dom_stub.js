@@ -4,14 +4,20 @@ class TestNode {
     this.tagName = tag; this.children = []; this.dataset = {}; this.listeners = {};
     this.value = ""; this.textContent = ""; this.disabled = false; this.hidden = false;
   }
-  append(node) { this.children.push(node); node.parentElement = this; }
+  append(...nodes) {
+    nodes.forEach(node => { this.children.push(node); node.parentElement = this; });
+  }
   replaceChildren() { this.children = []; }
   addEventListener(name, callback) { this.listeners[name] = callback; }
   setAttribute(name, value) { this[name] = value; }
   contains(node) { return node === this || this.children.some(child => child.contains(node)); }
   querySelectorAll(selector) {
+    if (selector.includes(",")) {
+      return selector.split(",").flatMap(part => this.querySelectorAll(part.trim()));
+    }
     return this.children.flatMap(child => [
       ...(selector === "[data-i18n]" ? (child.dataset.i18n ? [child] : []) :
+        selector === "[data-llm-code]" ? (child.dataset.llmCode ? [child] : []) :
         child.tagName === selector ? [child] : []), ...child.querySelectorAll(selector),
     ]);
   }

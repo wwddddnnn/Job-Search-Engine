@@ -1,10 +1,10 @@
 # Phase 2.5 人工整理与核验 UI
 
-状态：S1、S2a、S2b 已交付并通过审查；S3–S4 未开始。
+状态：S1、S2a、S2b 已交付并通过审查；S3 已拆为 S3a / S3b；S3a 已交付，S3b / S4 未开始。
 更新日期：2026-09-19。
 
 本文记录用户确认的产品行为；切片按建议顺序交付，S1、S2a 已交付并通过审查，
-S2b 已交付并通过审查。已实现范围见文末 S1、S2a 与 S2b 契约；S3–S4 未开始。
+S2b 已交付并通过审查。已实现范围见文末 S1、S2a、S2b 与 S3a 契约；S3 已拆为 S3a / S3b；S3a 已交付，S3b / S4 未开始。
 
 ## 目标与范围
 
@@ -129,7 +129,8 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 | S1（已交付） | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 通过测试验证重启恢复、未确认事实隔离和历史不可变 |
 | S2a（已交付） | stdlib 本地启动入口（单命令 + README 启动/地址/停止）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、模块化原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染/源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染/源码 → 重启后仍在 |
 | S2b（已交付并通过审查） | 双栏编辑：选区创建条目（带 locator）、编辑/核验/拒绝/待澄清/删除/撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
-| S3（未开始） | 多配置管理、引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
+| S3a（已交付） | 多套 API 配置、本地受控凭据、配置面板与契约 | 增删改查、切换与重启恢复；不发起真实请求 |
+| S3b（未开始） | 引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
 | S4（未开始） | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
 
 ## 验收标准
@@ -262,3 +263,71 @@ JS 测试通过全新 JavaScriptCore 上下文模拟刷新，验证冲突输入�
 逻辑测试依赖 **macOS 系统 JavaScriptCore，非 darwin 平台会静默 skip**（unittest 显示 skipped）。
 view 测试只用最小 DOM 夹具验证事件与渲染分支，不代表真实浏览器验收；双向选区、输入法组合
 输入、粘贴大段文本必须按 README 人工操作，不能声称已被自动测试覆盖。
+
+
+## S3a 契约（已交付）
+
+S3 拆为 S3a（配置与凭据）与 S3b（引用 / prompt、Mock 优化、替换 / 撤销）。
+本轮交付 S3a，S3b / S4 未开始；没有真实 LLM 客户端、网络探测或 Key 有效性验证。
+「配置入口可用」不代表「真实调用已接入」。验收标准第 7 条由本切片实现；第 8 条
+除普通模式提示外仍待 S3b。人工步骤见 README 第 4 节。
+
+### 持久化与秘密边界
+
+- 新增迁移 `0007_llm_configs.sql`，仅新建 `llm_configs` 与 `llm_selection`；0001–0006
+  不变。多套配置需要稳定 ID 与关系约束，因此独立建表，不复用只有语言字段的 0006 设置表。
+- 非秘密字段为 `id/name/api_url/model/created_at/updated_at`，时间为 UTC ISO 8601。
+  当前选择单行持久化，允许 null；删除当前配置以外键 `ON DELETE SET NULL` 清空选择。
+- `core.secrets.SecretStore` 提供 get/set/delete，小型内存实现供测试使用；
+  `FileSecretStore` 在数据库同目录的 `secrets/` 保存纯文本 Key，目录 0700、文件 0600。
+  文件名只使用后端生成的配置 ID，拒绝路径穿越和符号链接读取，写入使用临时文件原子替换。
+  默认 `.job-search-assistant/secrets/`；`.gitignore` 同时覆盖自定义库目录下的 `secrets/`。
+- **这不是加密，只是本机文件权限 + 不进入日志/审计/响应/浏览器存储**。
+  具有本机同用户权限的人仍可读取文件；备份凭据目录也会备份明文。
+- 写路径统一通过 `LLMConfigService`，传入 RequestContext（actor / correlation）和幂等键。
+  SQLite immediate 事务串行化变更、审计与幂等结果；凭据只通过 SecretStore 操作。
+  SQLite 只保存请求摘要哈希及非秘密结果，不保存请求体或 Key 明文。
+- 普通字段更新不调用秘密写接口；删除同时删除凭据。SQL / 审计失败时在释放事务锁前
+  恢复旧凭据；文件保存失败不会提交配置。文件系统与 SQLite 不是同一个原子事务：
+  进程被强制终止或断电发生在文件变更与数据库提交之间时，凭据可能与配置不同步；
+  应重新设置 Key，新增操作也可能留下孤立秘密文件。这里不承诺跨资源崩溃原子性。
+  正常保存完成后的停止 / 重启恢复配置、选择及凭据。
+
+### HTTP 形状与掩码语义
+
+| 方法与路径 | 请求 | 成功返回（200） |
+|---|---|---|
+| `GET /api/llm/configs` | 无 | 非秘密配置 DTO 数组 |
+| `POST /api/llm/configs` | `{name, api_url, model, api_key?, idempotency_key}` | 配置 DTO |
+| `PUT /api/llm/configs/<id>` | `{name?, api_url?, model?, api_key?, idempotency_key}` | 配置 DTO |
+| `DELETE /api/llm/configs/<id>` | `{idempotency_key}` | `{id, deleted: true}` |
+| `GET /api/llm/selection` | 无 | `{config_id}`（初始 null） |
+| `PUT /api/llm/selection` | `{config_id, idempotency_key}` | `{config_id}` |
+
+配置 DTO 固定为 `{id, name, api_url, model, created_at, updated_at, has_key}`。
+`has_key` 是布尔值，绝不返回 Key、Key 片段或实际长度。列表 / 编辑中的掩码统一为
+`••••••••`，纯展示文本，不是 input 的 value；点击「重新设置」才出现空的密码输入框。
+
+- PUT **不带** `api_key`：保留原 Key；`api_key: ""`：明确清除；非空合法字符串：替换。
+  不接受 null 或 `clear_key`。POST 省略或空串都表示没有 Key。
+- 后端拒绝包含 `*`、`•`、`●`、`…` 的 Key，包括部分掩码，返回 422 且不改变原凭据。
+- 名称、地址、模型为非空 UTF-8 文本，最多 500 字符；Key 最多 8192 字符，禁止控制字符。
+  地址仅允许 HTTP(S)、有效主机，禁止内嵌用户名/密码、查询参数、fragment；不发送请求。
+- 所有写请求必须有非空 `idempotency_key`（最多 100 字符）。相同动作 / 键 / 输入重放
+  原响应，不重复配置或审计；同键不同输入（含 Key 变化）返回 409。重放响应代表原操作
+  当时的状态，查看当前状态需重新 GET。
+- 沿用 Host、写 token、JSON、2 MiB 守卫：缺/错 token 与错 Host 为 403，非 JSON 415，
+  超限 413，非法 JSON 400；非对象、未知/缺失字段为 422，不存在配置 404，基础设施故障 500。
+  错误只返回 `{error: {code, message, correlation_id}}`，不反射请求值。
+- 审计动作 `llm.create/update/delete/select` 只含非秘密 before/after；HTTP 不记录请求日志。
+  前端按 code 翻译，DOM 仅在 `views/llm.js`；状态与请求分别在 `llm-state.js`、
+  `llm-actions.js`。Key 只在输入 / 待发送或待重试请求内存短暂存在，不写浏览器存储。
+  网络失败重试保持原幂等键，取消或成功后释放待重试请求。
+
+### 自动验证与人工边界
+
+新增测试断言历史迁移校验和、0006→0007 保留原数据、0700/0600 权限、重启恢复、
+普通字段保持 Key、删除 / 清除 / 替换、掩码拒绝、响应 / 审计 / 数据库 / 日志无 Key、
+HTTP 守卫与全部写端点幂等。真实 loopback 集成测试保留；额外内存流测试执行同一个
+HTTP handler，不能代替真实端口验证。JavaScriptCore 执行真实配置状态 / 请求 / view，
+检查掩码不提交、重试幂等及中英文提示；不代表已完成人工浏览器验收。

@@ -17,14 +17,14 @@
 ## 现在开发到哪了
 
 **当前在 Phase 2.5「人工整理与核验 UI」，S1、S2a 与 S2b 已通过审查，
-S3 / S4 待开始。**
+S3 拆为 S3a / S3b；S3a 已交付，S3b / S4 待开始。**
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | **Phase 0 基础层** | 模块边界、校验和保护的 SQLite 迁移、错误模型、RequestContext、幂等、审计 | ✅ 已验收 |
 | **Phase 1 Job Discovery** | SearchConfig 持久化、JobsPipe Provider 适配、分页搜索运行、原始响应留存、规范化、同 source 去重、不可变 job snapshot | ✅ 已验收 |
 | **Phase 2 Career Foundation** | 迁移 0004 + `career/` 领域层、受控文件存储、纯文本提取器、导入 / 抽取 / 确认 / 证据包 / 快照五个应用服务 | ✅ S1–S5 全部验收 |
-| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a、S2b 已通过审查 / S3、S4 待开始 |
+| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a、S2b 已通过审查 / S3a 已交付，S3b / S4 待开始 |
 | **B 步 真实 LLM** | 接入真实 provider（当前只有确定性假 provider） | ⏳ 待开始 |
 | **Phase 3 Job Matching** | MatchingPolicy、hard filter、shortlist、MatchRun / Result、失效重算 | ⏳ 未开始 |
 | **Phase 4–7** | Application Core、Agent-ready Contracts、MCP Adapter、受控浏览器投递 | ⏳ 未开始 |
@@ -118,7 +118,7 @@ PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/
 
 S2a 支持 Markdown 导入、多文档只读浏览、中英文、渲染/源码切换、打开或创建审核草稿。
 S2b 已交付选区建条目、编辑、确认、拒绝、待澄清、删除、撤销、自动保存、预览发布与历史版本。
-S2b 的审查修补已通过并提交；S3 / S4 尚未开始。
+S2b 的审查修补已通过并提交；S3 拆为 S3a / S3b：S3a 配置与凭据已交付；S3b / S4 尚未开始。
 Markdown 支持标题、段落、列表、强调、链接和围栏代码块子集，不承诺完整 CommonMark；
 源码视图显示完整原文，界面语言不改变简历内容。
 
@@ -183,6 +183,45 @@ composer 在冲突、认证失败、网络失败、保存中或待保存时只�
 校验失败仍允许编辑改错。发布期间输入禁用，已删除条目输入仍禁用。
 冲突或保存失败时可点「取消」收起 composer，输入与保存队列保留；点「展开未保存条目」
 可再次展开，收起不会解除预览/发布门控。发布期间不能收起。
+
+#### S3a 人工验收与 HTTP 契约
+
+S3 已拆为 S3a（配置与凭据）和 S3b（引用 / prompt、Mock 优化、替换 / 撤销）。
+本轮仅交付 S3a；**配置入口可用，真实调用未接入**。
+
+1. 使用上述命令与独立数据库启动，在「LLM API 配置」新增两套不同的名称、API 地址、模型。
+   一套填写 Key，一套留空。检查列表分别显示固定掩码和「未设置 Key」，不显示 Key 片段。
+2. 编辑已有配置的名称、地址、模型，直接保存；Key 应保持已设置。点击「重新设置」才能
+   输入新 Key；该输入框留空保存表示清除 Key。再次填写保存后应恢复固定掩码。
+3. 轮流「选用」两套配置，检查「当前配置」标记。刷新、停止服务并以同一数据库重启，
+   检查配置、当前选择和 Key 已设置状态仍在（这不等于验证了 Key 的有效性）。
+4. 删除带 Key 的配置，检查列表与对应秘密文件均消失；删除当前配置后当前选择为空。
+5. 切换中英文，检查表单、错误提示、掩码和「重新设置」；普通模式应明确显示
+   「真实调用未接入。本阶段保存配置不发起真实请求，也不验证连通性」。
+6. 保存失败可「重试原请求」（沿用相同幂等键）或「放弃重试」；失败请求只暂存在内存，
+   不写浏览器存储。刷新会丢弃未完成输入；会话失效需刷新后重新填写。
+
+端点均沿用 token / Host / JSON / 2 MiB 守卫及 code 翻译：
+
+| 方法与路径 | 输入 / 返回 |
+|---|---|
+| `GET /api/llm/configs` | 配置数组，每项 `{id, name, api_url, model, created_at, updated_at, has_key}` |
+| `POST /api/llm/configs` | `{name, api_url, model, api_key?, idempotency_key}` → 配置 DTO |
+| `PUT /api/llm/configs/<id>` | `{name?, api_url?, model?, api_key?, idempotency_key}` → 配置 DTO |
+| `DELETE /api/llm/configs/<id>` | `{idempotency_key}` → `{id, deleted: true}` |
+| `GET /api/llm/selection` | `{config_id: string 或 null}` |
+| `PUT /api/llm/selection` | `{config_id: string 或 null, idempotency_key}` → `{config_id}` |
+
+写成功为 200；所有写请求必须携带幂等键。PUT 省略 `api_key` 保留原 Key，`api_key: ""`
+显式清除；掩码字符串被拒绝（422），不得当作新 Key。未知字段、非对象请求体或非法字段
+返回 422；相同键不同输入 409；不存在配置 404。读取永远不返回 Key 或 Key 片段。
+API 地址只做本地格式校验：HTTP(S)、无用户名/密码、查询参数和 fragment，不探测连通性。
+
+新增 `0007_llm_configs.sql` 存非秘密配置与当前选择，不修改 0001–0006；多套配置独立建表，
+避免混入仅保存语言的 `ui_settings`。Key 放在数据库同目录的 `secrets/`，目录 0700、文件
+0600；默认路径 `.job-search-assistant/secrets/`，自定义路径的 `secrets/` 也被 gitignore 忽略。
+**这不是加密，只是本机文件权限 + 不进入日志/审计/响应/浏览器存储**。
+更多故障边界见 [S3a 契约](docs/phase2.5-career-review-ui.md#s3a-契约已交付)。
 
 #### S2a HTTP 契约
 
@@ -310,7 +349,8 @@ API key。详见 [docs/phase1-job-discovery.md](docs/phase1-job-discovery.md)。
 | S1 ✅ | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 测试验证重启恢复、未确认事实隔离、历史不可变 |
 | S2a ✅ | 启动入口（单命令 + README 三条信息）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染 / 源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染 / 源码 → 重启后仍在 |
 | S2b ✅ 已通过审查 | 双栏编辑：选区创建条目（带 locator）、编辑 / 核验 / 拒绝 / 待澄清 / 删除 / 撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
-| S3 ⏳ | 多配置管理、引用 / prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
+| S3a ✅ | 多套 LLM API 配置、受控本地凭据、配置面板与契约 | 配置增删改查、切换与重启恢复；不发起真实请求 |
+| S3b ⏳ | 引用 / prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
 | S4 ⏳ | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
 
 ## 开发方式：builder + reviewer 双 agent 循环

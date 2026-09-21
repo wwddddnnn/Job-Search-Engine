@@ -1,3 +1,4 @@
+import {loadConfigs} from "./llm-actions.js";
 import {loadEditor} from "./editor-actions.js";
 import {request, APIError, isStale, invalidate} from "./api.js";
 import {getState, update} from "./state.js";
@@ -20,6 +21,7 @@ export async function initialize() {
     ]);
     update({documents, draft, ready: true});
     loadEditor(draft);
+    await loadConfigs();
     if (documents.length) await selectDocument(documents[0].id);
   } catch (error) { failed(error); }
 }

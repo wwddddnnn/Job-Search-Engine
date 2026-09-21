@@ -372,6 +372,7 @@ class EditorActionViewTests(JavaScriptTests):
             const changeLanguage = () => {}, openDraft = () => {}, importFile = () => {};
             const retryImport = () => {}, canRetryImport = () => false;
             const documentList = () => () => {}, readerView = () => () => {};
+            const llmView = () => () => {};
             class APIError { localized() { return "error"; } }
         ''')
         self.module("views/app.js")

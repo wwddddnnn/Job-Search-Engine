@@ -6,6 +6,9 @@ from pathlib import Path
 from job_search_assistant.app_services.career import GetCareerProfileSnapshot, ImportResumeDocument
 from job_search_assistant.app_services.career_review import CareerReviewService
 from job_search_assistant.app_services.foundation import build_foundation
+from job_search_assistant.app_services.llm_configs import LLMConfigService
+from job_search_assistant.infrastructure.files.secret_store import FileSecretStore
+from job_search_assistant.infrastructure.sqlite.llm_store import SQLiteLLMStore
 from job_search_assistant.career.extraction import DraftEvidence
 from job_search_assistant.career.review import ReviewSource, identifier, require_version
 from job_search_assistant.core.errors import InfrastructureError, NotFoundError, ValidationError
@@ -25,6 +28,7 @@ class LocalUIService:
     storage: FileSystemDocumentStorage
     importer: ImportResumeDocument
     review: CareerReviewService
+    llm: LLMConfigService
 
     def documents(self):
         return [self._document_summary(self.career.get_resume_document(document_id=identifier))
@@ -166,4 +170,7 @@ def build_local_ui(*, database_path, migrations_path):
         SQLiteUIStore(foundation.database), career, storage,
         ImportResumeDocument(career, storage, PlainTextResumeExtractor(storage)),
         CareerReviewService(SQLiteReviewStore(foundation.database)),
+        LLMConfigService(SQLiteLLMStore(foundation.database), FileSecretStore(
+            Path(database_path).resolve().parent / "secrets",
+        )),
     )

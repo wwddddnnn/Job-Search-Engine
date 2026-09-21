@@ -1,3 +1,4 @@
+import {llmView} from "./llm.js";
 import {editorView} from "./editor.js";
 import {initialize, selectDocument, changeView, changeLanguage, openDraft,
   importFile, retryImport, canRetryImport} from "../actions.js";
@@ -14,6 +15,7 @@ const profileStatus = document.querySelector("#profile-status");
 const draftStatus = document.querySelector("#draft-status");
 const importStatus = document.querySelector("#import-status");
 const editor = editorView();
+const llm = llmView();
 const list = documentList(selectDocument), reader = readerView(changeView);
 language.addEventListener("change", () => changeLanguage(language.value));
 file.addEventListener("change", () => importFile(file.files[0]));
@@ -50,6 +52,7 @@ function render(state, previous = {}) {
       state.selectedId !== previous.selectedId) list(state);
   reader(state);
   editor(state);
+  llm(state);
 }
 subscribe(render);
 render(getState());
