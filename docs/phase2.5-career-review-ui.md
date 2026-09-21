@@ -305,6 +305,12 @@ S3 拆为 S3a（配置与凭据）与 S3b（引用 / prompt、Mock 优化、替�
 | `PUT /api/llm/selection` | `{config_id, idempotency_key}` | `{config_id}` |
 
 配置 DTO 固定为 `{id, name, api_url, model, created_at, updated_at, has_key}`。
+Host/token 校验通过后，在读取请求体之前拒绝以下不支持的方法组合：
+只有 `/api/llm/configs/<id>`（非空单段 ID）支持 DELETE，其余路径的 DELETE
+返回 501 `http_error`（包括 `/api/draft`、配置集合与末尾空 ID）；
+`PUT /api/llm/configs` 与 `POST /api/llm/selection` 返回 404 `not_found`。
+这些响应不因请求体缺失或 JSON 非法而改变；Host/token 不合法仍优先返回 403。
+
 `has_key` 是布尔值，绝不返回 Key、Key 片段或实际长度。列表 / 编辑中的掩码统一为
 `••••••••`，纯展示文本，不是 input 的 value；点击「重新设置」才出现空的密码输入框。
 

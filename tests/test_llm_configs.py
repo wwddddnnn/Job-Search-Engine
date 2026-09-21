@@ -144,6 +144,26 @@ class LLMHTTPTests(unittest.TestCase):
         self.assert_error(self.write("/api/llm/selection", {"config_id": "absent"}),
                           404, "not_found")
 
+    def test_unsupported_methods_are_rejected_before_body_parsing(self):
+        for method, path, status, code in (
+            ("DELETE", "/api/draft", 501, "http_error"),
+            ("DELETE", "/api/llm/configs", 501, "http_error"),
+            ("DELETE", "/api/llm/configs/", 501, "http_error"),
+            ("DELETE", "/api/llm/configs/absent/extra", 501, "http_error"),
+            ("POST", "/api/llm/selection", 404, "not_found"),
+            ("PUT", "/api/llm/configs", 404, "not_found"),
+        ):
+            with self.subTest(method=method, path=path):
+                self.assert_error(self.request(path, method=method), status, code)
+                self.assert_error(self.request(path, method=method, raw=b"{"), status, code)
+                for headers in ({"X-JSA-Token": None}, {"X-JSA-Token": "wrong"},
+                                {"Host": "evil.invalid"}):
+                    self.assert_error(self.request(path, method=method, headers=headers),
+                                      403, "authorization_error")
+        self.assertEqual([], self.service.llm.configs())
+        db = SQLiteDatabase(self.root / "db.sqlite", MIGRATIONS)
+        self.assertEqual([], db.fetch_all("SELECT * FROM audit_events"))
+
     def test_idempotency_replays_all_commands_and_conflicts(self):
         body = self.body(api_key=secrets.token_urlsafe(32))
         first = self.request("/api/llm/configs", method="POST", body=body)
@@ -282,11 +302,14 @@ class LLMInProcessHTTPTests(LLMHTTPTests):
         if method != "GET":
             supplied["X-JSA-Token"] = server.token
         supplied.update(headers or {})
-        data = raw if raw is not None else json.dumps(body).encode()
-        supplied["Content-Length"] = str(len(data))
+        data = raw if raw is not None else (
+            json.dumps(body).encode() if body is not None else None
+        )
+        if data is not None:
+            supplied["Content-Length"] = str(len(data))
         lines = [f"{method} {path} HTTP/1.1"] + [
             f"{key}: {value}" for key, value in supplied.items() if value is not None]
-        wire = ("\r\n".join(lines) + "\r\n\r\n").encode() + data
+        wire = ("\r\n".join(lines) + "\r\n\r\n").encode() + (data or b"")
 
         class Connection:
             def __init__(self):

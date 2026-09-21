@@ -98,6 +98,14 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if (len(tokens) != 1 or not tokens[0].isascii()
                         or not secrets.compare_digest(tokens[0], self.server.token)):
                     raise HTTPProblem(403, "authorization_error", "Write token is required.")
+                # Reject unsupported method/path pairs before requiring a request body.
+                config_item = (path.startswith("/api/llm/configs/")
+                               and path.count("/") == 4 and not path.endswith("/"))
+                if self.command == "DELETE" and not config_item:
+                    raise HTTPProblem(501, "http_error", "HTTP request rejected.")
+                if ((self.command == "PUT" and path == "/api/llm/configs")
+                        or (self.command == "POST" and path == "/api/llm/selection")):
+                    raise HTTPProblem(404, "not_found", "Endpoint is not available.")
                 body = self._body(review_command=path.startswith(("/api/review/", "/api/llm/")))
             if path == "/api" or path.startswith("/api/"):
                 self._json(200, self._route(path, body))

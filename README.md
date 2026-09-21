@@ -223,6 +223,12 @@ API 地址只做本地格式校验：HTTP(S)、无用户名/密码、查询参�
 **这不是加密，只是本机文件权限 + 不进入日志/审计/响应/浏览器存储**。
 更多故障边界见 [S3a 契约](docs/phase2.5-career-review-ui.md#s3a-契约已交付)。
 
+Host/token 校验后、读取请求体前：非 `/api/llm/configs/<id>`（非空单段 ID）路径的
+DELETE 返回 501 `http_error`，保留 `DELETE /api/draft` 的既有行为；
+`DELETE /api/llm/configs` 同样返回 501。
+`PUT /api/llm/configs`、`POST /api/llm/selection` 返回 404 `not_found`。
+上述结果不依赖请求体；Host/token 不合法仍优先返回 403。
+
 #### S2a HTTP 契约
 
 - `GET /api/session` 返回 `{token, language, profile}`，无档案时 `profile=null`。
