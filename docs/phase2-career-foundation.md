@@ -143,10 +143,10 @@ UnderReview → DraftReady          用户要求修改/重新提取
 4. 只有显式确认项为 verified；无文档来源的用户补充记为 `user_assertion`，不伪装成简历来源。
 5. 每次确认产生可引用的 `ProfileVersion`，并有 before/after 修订审计可回溯。
 6. adapter 层不得绕开 application service 直连数据库。
-7. 全部测试通过：
+7. 全部测试通过（`PYBIN` 由仓库根 `dev.env` 提供，也是编排脚本每轮使用的解释器）：
 
 ```bash
-PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/python -m unittest discover -s tests
+source dev.env && PYTHONPATH=src "$PYBIN" -m unittest discover -s tests
 ```
 
 且不访问网络、LLM、MCP 或浏览器。
@@ -174,7 +174,13 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 - **B 步**：接入真实 LLM provider（用户已确认在 Phase 2 完成后进行）。
 - **Phase 3**：Job Matching。
 
-## S1 审查遗留项（S2–S4 必须处理）
+## 审查遗留项（历史记录）
+
+以下各表是 Phase 2 各轮 reviewer 的非阻塞观察，按原样保留，供追溯当时的判断依据；每条在对应切片
+交付时的收口情况见各轮 `DEVELOPMENT_LOG.md` 与后续切片契约，这里不复述结论。表内「落点」列写的是
+当时约定的处理时机。
+
+### S1 轮（落点 S2–S4）
 
 来自 S1 轮 reviewer 的 6 条非阻塞观察。它们不阻断 S1，但都属于**必须在后续切片收口**的口径问题：
 
@@ -187,7 +193,7 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 5 | 「已发布版本中不得出现 `draft`/`needs_clarification`/`rejected` 的 experience/skill」目前只在 domain/application 层把关，DB 的 `experiences.verification_status` 仍允许这些取值 | **S4 的 `ConfirmExperienceFacts` 必须兜住**，否则验收标准 4 存在被绕过空间 |
 | 6 | `llm_extraction_runs` 的 `status` 与 `output_ref`/`completed_at`/`error_summary` 的一致性只由 domain 保证，DB 无对应 CHECK | S3 落 store 时补一层防护 |
 
-## S3 审查遗留项（S4 必须处理）
+### S3 轮（落点 S4）
 
 来自 S3 三轮审查的非阻塞观察：
 
@@ -199,7 +205,7 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 4 | `completed_at` 变必填后，一致性只保证「与调用方传入值一致」，不校验时间单调性 | store 侧顺带拒绝 `completed_at < started_at` |
 | 5 | 「未配置 provider」被定为确定性失败 → 落 `draft_failed` 并**消耗 start key**，配置修好后必须换新 key | 后端口径无异议；将来 UI 文案需说明 |
 
-## S4 审查遗留项（S5 必须处理）
+### S4 轮（落点 S5）
 
 | # | 观察 | 落点 |
 |---|---|---|
@@ -209,7 +215,7 @@ Phase 2 按以下顺序逐片交付，每片一个功能分支、一轮 builder 
 | 4 | 测试缺口：空 confirmations、重复 `experience_index`、越界索引（experience/achievement/skill）、achievement 带 draft 被拒——均只有代码覆盖、无断言；同 key 并发（第二个请求在 finalize 时看到 COMPLETED）抛 `InfrastructureError` 而非重放——单进程本地场景可接受，记录备查 | S5 顺手补齐，或明确不补 |
 | 5 | 契约表里 `ConfirmExperienceFacts` 输入含「draft changes」（用户编辑值），本轮只支持 accept + 子项勾选 | 已在切片表处注明归 Phase 2.5，本轮不再当缺口 |
 
-## Phase 2.5 / Phase 3 观察清单（来自 S5 审查）
+### S5 轮：Phase 2.5 / Phase 3 观察清单
 
 Phase 2 内不处理，但下游开工前应知道：
 

@@ -6,16 +6,9 @@ Phase 0 提供后续四个领域模块共享的最小基础设施，不实现 Jo
 
 ## 源码边界
 
-```text
-src/job_search_assistant/
-├── app_services/              # 跨模块用例服务的预留位置
-├── applications/              # Application 业务域的预留位置
-├── career/                    # Career / Experience Library 业务域的预留位置
-├── discovery/                 # Job Discovery 业务域的预留位置
-├── matching/                  # Job Matching 业务域的预留位置
-├── core/                      # 与领域无关的错误、上下文、ID、幂等、审计抽象
-└── infrastructure/sqlite/     # SQLite 连接、迁移执行和 repository 基础设施
-```
+Phase 0 建立的是四模块的**目录骨架**：`career/`、`discovery/`、`matching/`、`applications/` 当时都是
+预留位置，`app_services/` 是跨模块用例服务的落点，`core/` 与 `infrastructure/sqlite/` 是本阶段真正
+落地的两块。当前目录树与各目录现状见 [README「项目结构」](../README.md#项目结构)。
 
 `core` 不得依赖任何领域模块或 SQLite 实现。领域模块未来依赖 `core` 中的抽象和类型；`infrastructure` 可依赖 core 与领域 ports，但领域不得导入 SQLite 或具体 I/O 实现。`app_services` 负责事务、应用用例和跨域只读协调，不存放 HTTP/MCP controller。
 
