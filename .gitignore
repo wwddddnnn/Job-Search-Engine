@@ -33,3 +33,6 @@ htmlcov/
 
 # 工具工作副本
 .kilo/
+
+# Local controlled LLM credential directories (also for custom database paths)
+**/secrets/

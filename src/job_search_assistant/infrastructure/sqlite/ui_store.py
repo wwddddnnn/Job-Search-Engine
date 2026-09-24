@@ -29,6 +29,12 @@ class SQLiteUIStore:
         )
         return rows[0]["id"] if rows else None
 
+    def profile_versions(self, profile_id):
+        return [dict(row) for row in self.database.fetch_all(
+            "SELECT id, version, created_at FROM profile_versions "
+            "WHERE profile_id = ? ORDER BY version DESC", (profile_id,),
+        )]
+
     def language(self):
         rows = self.database.fetch_all("SELECT language FROM ui_settings WHERE id = 1")
         if not rows or rows[0]["language"] not in ("zh", "en"):

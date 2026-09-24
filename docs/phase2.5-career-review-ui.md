@@ -1,9 +1,11 @@
 # Phase 2.5 人工整理与核验 UI
 
-状态：S1、S2a 已交付并通过审查；S2b–S4 未开始。更新日期：2026-09-17。
+状态：S1、S2a、S2b 已交付并通过审查；S3 已拆为 S3a / S3b，S3a 已交付，S3b / S4 未开始。
+更新日期：2026-09-19。
 
-本文记录用户确认的产品行为；切片按建议顺序交付，S1、S2a 已交付并通过审查，
-已实现范围见文末 S1 与 S2a 契约；S2b–S4 未开始。
+本文记录用户确认的产品行为与各切片契约；交付顺序见文末「实现边界与建议切片」，
+已实现范围见文末各切片契约节。运行方式与人工验收步骤在
+[本地运行与人工验收手册](manual-acceptance.md)。
 
 ## 目标与范围
 
@@ -125,11 +127,12 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 
 | 切片 | 内容 | 可人工检查的结果 |
 |---|---|---|
-| S1 | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 通过测试验证重启恢复、未确认事实隔离和历史不可变 |
-| S2a | stdlib 本地启动入口（单命令 + README 启动/地址/停止）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、模块化原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染/源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染/源码 → 重启后仍在 |
-| S2b | 双栏编辑：选区创建条目（带 locator）、编辑/核验/拒绝/待澄清/删除/撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
-| S3 | 多配置管理、引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
-| S4 | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
+| S1（已交付） | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 通过测试验证重启恢复、未确认事实隔离和历史不可变 |
+| S2a（已交付） | stdlib 本地启动入口（单命令 + README 启动/地址/停止）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、模块化原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染/源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染/源码 → 重启后仍在 |
+| S2b（已交付并通过审查） | 双栏编辑：选区创建条目（带 locator）、编辑/核验/拒绝/待澄清/删除/撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
+| S3a（已交付） | 多套 API 配置、本地受控凭据、配置面板与契约 | 增删改查、切换与重启恢复；不发起真实请求 |
+| S3b（未开始） | 引用/prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
+| S4（未开始） | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
 
 ## 验收标准
 
@@ -147,7 +150,24 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 
 ## S1 与 S2a 契约（已交付并通过审查）
 
-下文说明 S1 审核服务；S2a 启动入口、人工验收与 HTTP 契约见 [README 第 4 节](../README.md#4-本地启动s2a)。
+下文说明 S1 审核服务；S2a 的启动方式与人工验收步骤见
+[本地运行与人工验收手册](manual-acceptance.md#s2a-人工验收)，HTTP 契约如下。
+
+**S2a HTTP 契约**
+
+- `GET /api/session` 返回 `{token, language, profile}`，无档案时 `profile=null`。
+- `GET /api/documents` 返回 `{id, filename, imported_at, status}` 列表；`GET /api/documents/{id}`
+  在相同字段外返回 `content` 原文。`POST /api/documents` 接受
+  `{filename, content, idempotency_key}`，返回 `{document_id, status}`；同键同输入重放，
+  相同键不同输入返回 409。
+- `GET /api/profile` 返回快照；尚无档案时为 `null`，已创建但未发布时 `version=0`、
+  `profile_version_id=null`，不将存储故障吞成空档案。
+- `GET /api/draft` 返回草稿或 `null`；`POST /api/draft` 接受可选的
+  `{display_name, idempotency_key}`，仅打开或创建草稿。
+- `GET /api/settings/ui` 返回 `{language}`；`PUT` 接受 `{language, idempotency_key?}`，
+  语言仅限 `zh` / `en`。草稿创建和设置写入未提供幂等键时，由 adapter 生成请求级键。
+- 写请求带 `X-JSA-Token`，所有请求校验 `Host`。请求体为 JSON，最大 **2 MiB（含 JSON 开销）**；
+  未知字段拒绝。错误只返回 `{error: {code, message, correlation_id}}`，页面按 code 翻译。
 
 装配：`CareerReviewService(store=SQLiteReviewStore(foundation.database))`。
 公开类型由 `career` 导出；应用服务和 SQLite 实现分别由 `app_services` 与
@@ -183,7 +203,8 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 撤销父经历删除后可以继续整理并逐项确认。
 
 来源使用 `ReviewSource(document_id, DraftEvidence(...))`，新建来源必须含
-`source_locator`（例如 `offset:9:26`，以调用方选中的不可变文档文本为坐标）；已有 Phase 2
+`source_locator`（S2b 使用 `codepoint:9:26`，以不可变文档文本的 Unicode 码点为坐标，
+从 0 起、左闭右开；不使用含糊的 `offset` 前缀）；已有 Phase 2
 档案的 excerpt-only 引用也会保留。待发布引用以内嵌引用值保存于草稿，不建立平行证据表。
 确认发布后沿用 `ExperienceEvidence`，无文档依据的事实使用 `user_assertion`。
 0005 为现有 evidence 增加可选 `experience_skill_id`，使手工技能自己的来源与父经历来源
@@ -210,3 +231,129 @@ CareerStore 内部重构须同步审阅 adapter；这不是 UI/HTTP 可调用的
 空经历列表；已发布的合法空版本返回实际版本 ID / 版本号和空列表。不存在的 profile
 仍为 `NotFoundError`，存储错误不转成空状态。`GetVerifiedEvidencePack` 继续拒绝无可信事实
 的档案，且不会读取审核草稿。
+
+
+## S2b 契约（已交付并通过审查）
+
+人工验收、启动方式见 [本地运行与人工验收手册](manual-acceptance.md#s2b-人工验收)。
+S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
+
+- `GET /api/profile/versions`：`{id, version, created_at}` 列表，按版本倒序；无版本返回 `[]`。
+- `GET /api/profile/versions/<id>`：指定不可变档案快照。history 选择只改变展示的 snapshot，
+  不替换当前 profile、不写草稿或档案。
+- `POST /api/review/<action>`：共有 `draft_id`、`expected_version`；除 preview 外均要求
+  `idempotency_key`。HTTP 生成 context（actor、correlation ID），由应用服务执行事务。
+  顶层非对象、未知/缺失字段返回 `ValidationError` / 422；非法 JSON 为 400。
+- create：`kind`、`fields`，可选 `parent_id`、`selection`；edit：`item_id`、`changes`；
+  decide：`item_id`、`decision=confirm|reject|clarify|confirm_delete`；delete/restore：
+  `item_id`。以上返回已保存草稿（含 version、items、sources 和状态）。
+- selection：`{document_id, start, end}`，以 GET document 返回的完整原文为基准，
+  Unicode 码点、0 起、左闭右开。reader 将 DOM UTF-16 下标转换为码点；后端校验范围并
+  生成 `source_locator="codepoint:start:end"` 与原文摘录，保留 CRLF、emoji 等原始内容。
+  历史证据行保留原来的 `offset:…` 形式，不做迁移或清洗；新写入统一用 `codepoint:start:end`。
+- preview：接受 `base_version_id`，公开返回 `{draft_id, draft_version, base_version_id,
+  summary, content}`。**`content` 是新增公开字段**，为 `{kind, fields}` 列表，表示本次
+  实际发布的全部内容（含保留的旧事实），不是仅有变更摘要；summary 的 added/modified/deleted
+  列表描述本次变更。preview 只读，空变更可预览，空变更不能 publish。
+- publish：同样接受 `base_version_id`，返回 `{draft, profile_version_id, version, summary}`。
+  重新检查已保存草稿与档案基础版本。失败重试保持原 publication 请求及同一幂等键，
+  取消预览或开始新编辑才废弃该请求；有未保存输入/composer 时 editor-actions 阻止预览和发布。
+- 修改已确认内容立即显示待核验，保存后仍须重新确认；reject/clarify 不使新事实进入发布内容。
+  无已发布档案、尚无草稿、草稿无条目分别展示未发布提示、创建草稿提示和手工填写引导。
+- 超过 2 MiB、且声明长度不超过 4 MiB 的请求体，最多用 1 秒分块读取丢弃后返回 JSON 413；
+  更大的声明或未及时传完的请求会关闭连接，客户端可能仅收到断连。2 MiB 接受上限不变。
+
+
+composer 在冲突、认证失败、网络失败、保存中或待保存时只读，仍可聚焦、选中和复制；
+校验失败仍允许编辑改错。发布期间输入禁用，已删除条目输入仍禁用。
+冲突或保存失败时可点「取消」收起 composer，输入与保存队列保留；点「展开未保存条目」
+可再次展开，收起不会解除预览/发布门控。发布期间不能收起。
+
+### 冲突恢复取舍：选择 B
+
+采用成本较低且可测试的「复制后刷新」：冲突不自动合并、不自动改 expected_version 重发。
+失败 composer 保留全部字段，使用 readonly 而非 disabled，允许聚焦选中复制；已有条目编辑
+也保留未保存文字。冲突隐藏原样重试按钮，中英文指引均要求先复制所有未保存字段，再刷新
+读取最新草稿，对照后重新粘贴、保存、确认与发布。新页面产生新的幂等键并使用最新草稿版本。
+普通网络失败仍原样重试。没有静默丢弃队列；刷新是用户在复制后的显式操作，未复制文字不会
+跨刷新自动恢复。此方案避免引入 A 所需的额外重载、冲突合并和队列变基状态。
+
+JS 测试通过全新 JavaScriptCore 上下文模拟刷新，验证冲突输入可复制、最新版本重新保存成功
+并解除预览门控；HTTP 测试验证冲突、GET 最新草稿、新键保存及发布完整链路。
+逻辑测试依赖 **macOS 系统 JavaScriptCore，非 darwin 平台会静默 skip**（unittest 显示 skipped）。
+view 测试只用最小 DOM 夹具验证事件与渲染分支，不代表真实浏览器验收；双向选区、输入法组合
+输入、粘贴大段文本必须按 [人工验收手册](manual-acceptance.md#s2b-人工验收)操作，不能声称已被自动测试覆盖。
+
+
+## S3a 契约（已交付）
+
+S3 拆为 S3a（配置与凭据）与 S3b（引用 / prompt、Mock 优化、替换 / 撤销）。
+本轮交付 S3a，S3b / S4 未开始；没有真实 LLM 客户端、网络探测或 Key 有效性验证。
+「配置入口可用」不代表「真实调用已接入」。验收标准第 7 条由本切片实现；第 8 条
+除普通模式提示外仍待 S3b。人工步骤见 [人工验收手册](manual-acceptance.md#s3a-人工验收)。
+
+### 持久化与秘密边界
+
+- 新增迁移 `0007_llm_configs.sql`，仅新建 `llm_configs` 与 `llm_selection`；0001–0006
+  不变。多套配置需要稳定 ID 与关系约束，因此独立建表，不复用只有语言字段的 0006 设置表。
+- 非秘密字段为 `id/name/api_url/model/created_at/updated_at`，时间为 UTC ISO 8601。
+  当前选择单行持久化，允许 null；删除当前配置以外键 `ON DELETE SET NULL` 清空选择。
+- `core.secrets.SecretStore` 提供 get/set/delete，小型内存实现供测试使用；
+  `FileSecretStore` 在数据库同目录的 `secrets/` 保存纯文本 Key，目录 0700、文件 0600。
+  文件名只使用后端生成的配置 ID，拒绝路径穿越和符号链接读取，写入使用临时文件原子替换。
+  默认 `.job-search-assistant/secrets/`；`.gitignore` 同时覆盖自定义库目录下的 `secrets/`。
+- **这不是加密，只是本机文件权限 + 不进入日志/审计/响应/浏览器存储**。
+  具有本机同用户权限的人仍可读取文件；备份凭据目录也会备份明文。
+- 写路径统一通过 `LLMConfigService`，传入 RequestContext（actor / correlation）和幂等键。
+  SQLite immediate 事务串行化变更、审计与幂等结果；凭据只通过 SecretStore 操作。
+  SQLite 只保存请求摘要哈希及非秘密结果，不保存请求体或 Key 明文。
+- 普通字段更新不调用秘密写接口；删除同时删除凭据。SQL / 审计失败时在释放事务锁前
+  恢复旧凭据；文件保存失败不会提交配置。文件系统与 SQLite 不是同一个原子事务：
+  进程被强制终止或断电发生在文件变更与数据库提交之间时，凭据可能与配置不同步；
+  应重新设置 Key，新增操作也可能留下孤立秘密文件。这里不承诺跨资源崩溃原子性。
+  正常保存完成后的停止 / 重启恢复配置、选择及凭据。
+
+### HTTP 形状与掩码语义
+
+| 方法与路径 | 请求 | 成功返回（200） |
+|---|---|---|
+| `GET /api/llm/configs` | 无 | 非秘密配置 DTO 数组 |
+| `POST /api/llm/configs` | `{name, api_url, model, api_key?, idempotency_key}` | 配置 DTO |
+| `PUT /api/llm/configs/<id>` | `{name?, api_url?, model?, api_key?, idempotency_key}` | 配置 DTO |
+| `DELETE /api/llm/configs/<id>` | `{idempotency_key}` | `{id, deleted: true}` |
+| `GET /api/llm/selection` | 无 | `{config_id}`（初始 null） |
+| `PUT /api/llm/selection` | `{config_id, idempotency_key}` | `{config_id}` |
+
+配置 DTO 固定为 `{id, name, api_url, model, created_at, updated_at, has_key}`。
+Host/token 校验通过后，在读取请求体之前拒绝以下不支持的方法组合：
+只有 `/api/llm/configs/<id>`（非空单段 ID）支持 DELETE，其余路径的 DELETE
+返回 501 `http_error`（包括 `/api/draft`、配置集合与末尾空 ID）；
+`PUT /api/llm/configs` 与 `POST /api/llm/selection` 返回 404 `not_found`。
+这些响应不因请求体缺失或 JSON 非法而改变；Host/token 不合法仍优先返回 403。
+
+`has_key` 是布尔值，绝不返回 Key、Key 片段或实际长度。列表 / 编辑中的掩码统一为
+`••••••••`，纯展示文本，不是 input 的 value；点击「重新设置」才出现空的密码输入框。
+
+- PUT **不带** `api_key`：保留原 Key；`api_key: ""`：明确清除；非空合法字符串：替换。
+  不接受 null 或 `clear_key`。POST 省略或空串都表示没有 Key。
+- 后端拒绝包含 `*`、`•`、`●`、`…` 的 Key，包括部分掩码，返回 422 且不改变原凭据。
+- 名称、地址、模型为非空 UTF-8 文本，最多 500 字符；Key 最多 8192 字符，禁止控制字符。
+  地址仅允许 HTTP(S)、有效主机，禁止内嵌用户名/密码、查询参数、fragment；不发送请求。
+- 所有写请求必须有非空 `idempotency_key`（最多 100 字符）。相同动作 / 键 / 输入重放
+  原响应，不重复配置或审计；同键不同输入（含 Key 变化）返回 409。重放响应代表原操作
+  当时的状态，查看当前状态需重新 GET。
+- 沿用 Host、写 token、JSON、2 MiB 守卫：缺/错 token 与错 Host 为 403，非 JSON 415，
+  超限 413，非法 JSON 400；非对象、未知/缺失字段为 422，不存在配置 404，基础设施故障 500。
+  错误只返回 `{error: {code, message, correlation_id}}`，不反射请求值。
+- 审计动作 `llm.create/update/delete/select` 只含非秘密 before/after；HTTP 不记录请求日志。
+  前端按 code 翻译，DOM 仅在 `views/llm.js`；状态与请求分别在 `llm-state.js`、
+  `llm-actions.js`。Key 只在输入 / 待发送或待重试请求内存短暂存在，不写浏览器存储。
+  网络失败重试保持原幂等键，取消或成功后释放待重试请求。
+
+### 自动验证与人工边界
+
+新增测试断言历史迁移校验和、0006→0007 保留原数据、0700/0600 权限、重启恢复、
+普通字段保持 Key、删除 / 清除 / 替换、掩码拒绝、响应 / 审计 / 数据库 / 日志无 Key、
+HTTP 守卫与全部写端点幂等。真实 loopback 集成测试保留；额外内存流测试执行同一个
+HTTP handler，不能代替真实端口验证。JavaScriptCore 执行真实配置状态 / 请求 / view，
+检查掩码不提交、重试幂等及中英文提示；不代表已完成人工浏览器验收。

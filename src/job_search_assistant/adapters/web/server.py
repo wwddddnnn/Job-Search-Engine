@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import secrets
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
@@ -66,6 +67,9 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._handle()
 
+    def do_DELETE(self):
+        self._handle()
+
     def do_PUT(self):
         self._handle()
 
@@ -94,7 +98,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if (len(tokens) != 1 or not tokens[0].isascii()
                         or not secrets.compare_digest(tokens[0], self.server.token)):
                     raise HTTPProblem(403, "authorization_error", "Write token is required.")
-                body = self._body()
+                # Reject unsupported method/path pairs before requiring a request body.
+                config_item = (path.startswith("/api/llm/configs/")
+                               and path.count("/") == 4 and not path.endswith("/"))
+                if self.command == "DELETE" and not config_item:
+                    raise HTTPProblem(501, "http_error", "HTTP request rejected.")
+                if ((self.command == "PUT" and path == "/api/llm/configs")
+                        or (self.command == "POST" and path == "/api/llm/selection")):
+                    raise HTTPProblem(404, "not_found", "Endpoint is not available.")
+                body = self._body(review_command=path.startswith(("/api/review/", "/api/llm/")))
             if path == "/api" or path.startswith("/api/"):
                 self._json(200, self._route(path, body))
             elif self.command == "GET":
@@ -114,7 +126,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         except Exception:
             self._error(500, "infrastructure_error", "Operation failed.")
 
-    def _body(self):
+    def _body(self, *, review_command=False):
         if self.headers.get("Transfer-Encoding"):
             raise HTTPProblem(400, "bad_request", "Transfer encoding is not supported.")
         lengths = self.headers.get_all("Content-Length", [])
@@ -124,6 +136,25 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise HTTPProblem(413, "payload_too_large", "Request exceeds 2 MB.")
         length = int(lengths[0])
         if length > MAX_BODY:
+            # Bound both bytes and total time; draining lets write-then-read clients see 413.
+            self.close_connection = True
+            if length <= 2 * MAX_BODY:
+                deadline = time.monotonic() + 1
+                remaining = length
+                try:
+                    while remaining:
+                        budget = deadline - time.monotonic()
+                        if budget <= 0:
+                            break
+                        self.connection.settimeout(budget)
+                        chunk = self.rfile.read1(min(remaining, 64 * 1024))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                except (TimeoutError, ConnectionError):
+                    pass
+                finally:
+                    self.connection.settimeout(10)
             raise HTTPProblem(413, "payload_too_large", "Request exceeds 2 MB.")
         types = self.headers.get_all("Content-Type", [])
         if len(types) != 1 or types[0].split(";", 1)[0].strip().lower() != "application/json":
@@ -136,7 +167,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                                 object_pairs_hook=_unique_object)
         except (ValueError, UnicodeError, RecursionError, TimeoutError):
             raise HTTPProblem(400, "bad_request", "Invalid JSON body.") from None
-        if not isinstance(result, dict):
+        # Review DTO shape errors belong to the application service (422); keep older routes
+        # on their existing malformed-body contract (400).
+        if not isinstance(result, dict) and not review_command:
             raise HTTPProblem(400, "bad_request", "JSON body must be an object.")
         return result
 
@@ -154,6 +187,22 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _route(self, path, body):
         service = self.server.service
+        if path == "/api/llm/configs":
+            if self.command == "GET":
+                return service.llm.configs()
+            if self.command == "POST":
+                return service.llm.command("create", body, context=self.context)
+        if path == "/api/llm/selection":
+            if self.command == "GET":
+                return service.llm.selection()
+            if self.command == "PUT":
+                return service.llm.command("select", body, context=self.context)
+        if path.startswith("/api/llm/configs/") and path.count("/") == 4:
+            action = {"PUT": "update", "DELETE": "delete"}.get(self.command)
+            if action:
+                return service.llm.command(
+                    action, body, config_id=path.rsplit("/", 1)[1], context=self.context,
+                )
         if self.command == "GET":
             if path == "/api/session":
                 return {"token": self.server.token, **service.settings(),
@@ -164,10 +213,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return service.document(path.rsplit("/", 1)[1])
             if path == "/api/profile":
                 return service.profile()
+            if path == "/api/profile/versions":
+                return service.history()
+            if path.startswith("/api/profile/versions/") and path.count("/") == 4:
+                return service.profile(path.rsplit("/", 1)[1])
             if path == "/api/draft":
                 return service.draft()
             if path == "/api/settings/ui":
                 return service.settings()
+        if (self.command == "POST" and path.startswith("/api/review/")
+                and path.count("/") == 3):
+            return service.review_command(path.rsplit("/", 1)[1], body, context=self.context)
         if self.command == "POST" and path == "/api/documents":
             self._fields(body, ("filename", "content", "idempotency_key"))
             filename = body["filename"]

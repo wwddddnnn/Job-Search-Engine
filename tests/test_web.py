@@ -259,6 +259,164 @@ class WebTests(unittest.TestCase):
                           side_effect=InfrastructureError("private-secret")):
             self.assert_error(self.request("/api/profile"), 500, "infrastructure_error")
 
+    def review(self, action, draft, **payload):
+        from uuid import uuid4
+        return self.request("/api/review/" + action, method="POST", body={
+            "draft_id": draft["id"], "expected_version": draft["version"],
+            **({} if action == "preview" else {"idempotency_key": str(uuid4())}), **payload,
+        })
+
+    def test_review_http_partial_publish_sources_restore_and_history(self):
+        document = self.request("/api/documents", method="POST", body=self.import_body(
+            content="# 原文 😀\r\nRepeated **result**\nRepeated **result**",
+        ))[1]
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        response = self.review("create", draft, kind="experience",
+                               fields={"organization": "A", "role": "Engineer"}, selection={
+                                   "document_id": document["document_id"], "start": 2, "end": 6,
+                               })
+        self.assertEqual(200, response[0], response[1])
+        draft = response[1]
+        item = draft["items"][0]
+        self.assertEqual("原文 😀", item["sources"][0]["source_excerpt"])
+        self.assertEqual("codepoint:2:6", item["sources"][0]["source_locator"])
+        draft = self.review("create", draft, kind="skill", parent_id=item["id"],
+                            fields={"raw_skill_name": "Python"})[1]
+        skill_id = draft["items"][1]["id"]
+        draft = self.review("decide", draft, item_id=item["id"], decision="confirm")[1]
+        self.assertEqual("draft", draft["items"][1]["status"])
+        preview = self.review("preview", draft, base_version_id=None)[1]
+        self.assertEqual(1, len(preview["content"]))
+        result = self.review("publish", draft, base_version_id=None)[1]
+        draft = result["draft"]
+        version_id = result["profile_version_id"]
+        old = self.request("/api/profile/versions/" + version_id)[1]
+        self.assertEqual([], old["experiences"][0]["skills"])
+        draft = self.review("edit", draft, item_id=item["id"],
+                            changes={"role": "Unconfirmed new role"})[1]
+        self.assertEqual(item["sources"], draft["items"][0]["sources"])
+        draft = self.review("decide", draft, item_id=skill_id, decision="confirm")[1]
+        result = self.review("publish", draft, base_version_id=version_id)[1]
+        draft = result["draft"]
+        current = self.request("/api/profile")[1]
+        self.assertEqual("Engineer", current["experiences"][0]["role"])
+        self.assertEqual("Python", current["experiences"][0]["skills"][0]["name"])
+        self.assertEqual("Unconfirmed new role", draft["items"][0]["fields"]["role"])
+        draft = self.review("delete", draft, item_id=item["id"])[1]
+        draft = self.review("restore", draft, item_id=item["id"])[1]
+        self.assertFalse(draft["items"][0]["deleted"])
+        self.assertEqual("draft", draft["items"][0]["status"])
+        draft = self.review("delete", draft, item_id=item["id"])[1]
+        draft = self.review("decide", draft, item_id=item["id"], decision="confirm_delete")[1]
+        preview = self.review("preview", draft, base_version_id=draft["base_version_id"])[1]
+        self.assertEqual(2, len(preview["summary"]["deleted"]))
+        self.review("publish", draft, base_version_id=draft["base_version_id"])
+        self.assertEqual([], self.request("/api/profile")[1]["experiences"])
+        self.assertEqual(old, self.request("/api/profile/versions/" + version_id)[1])
+        self.assertEqual(3, len(self.request("/api/profile/versions")[1]))
+
+    def test_review_http_failure_retry_idempotency_and_stale_save(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        payload = {"kind": "experience", "fields": {"organization": "A", "role": "B"},
+                   "idempotency_key": "stable-create"}
+        with patch.object(self.service.review.store, "execute_review_command",
+                          side_effect=InfrastructureError("failed save")):
+            self.assert_error(self.review("create", draft, **payload), 500,
+                              "infrastructure_error")
+        saved = self.review("create", draft, **payload)[1]
+        self.assertEqual(saved, self.review("create", draft, **payload)[1])
+        item_id = saved["items"][0]["id"]
+        newest = self.review("edit", saved, item_id=item_id, changes={"role": "new"})[1]
+        self.assert_error(self.review("edit", saved, item_id=item_id, changes={"role": "old"}),
+                          409, "conflict")
+        self.assertEqual(saved, self.review("create", draft, **payload)[1])
+        self.assertEqual(newest, self.request("/api/draft")[1])
+        self.assert_error(self.review("publish", newest, base_version_id="stale"),
+                          409, "conflict")
+        self.assert_error(self.review("preview", saved, base_version_id=None), 409, "conflict")
+
+    def test_review_http_rejects_unknown_nested_fields_and_invalid_offsets(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        for payload in (
+            {"kind": "experience", "fields": [], "other": True},
+            {"kind": "experience", "fields": {"organization": "A", "role": "B", "extra": 1}},
+            {"kind": "experience", "fields": {}, "selection": {"document_id": "x", "extra": 1}},
+            {"kind": "experience", "fields": {}, "expected_version": True},
+        ):
+            self.assert_error(self.review("create", draft, **payload), 422, "validation_error")
+        doc = self.request("/api/documents", method="POST", body=self.import_body())[1]
+        self.assert_error(self.review("create", draft, kind="experience", fields={}, selection={
+            "document_id": doc["document_id"], "start": 0, "end": 1000,
+        }), 422, "validation_error")
+        saved = self.review("create", draft, kind="experience",
+                            fields={"organization": "A", "role": "B"})[1]
+        item_id = saved["items"][0]["id"]
+        self.assert_error(self.review("restore", saved, item_id=item_id), 409, "invalid_state")
+        self.assert_error(self.review("edit", saved, item_id="missing", changes={"role": "B"}),
+                          404, "not_found")
+
+    def test_real_three_mib_body_returns_readable_413(self):
+        # urllib writes the complete body before reading: a premature close raises BrokenPipe.
+        self.assert_error(self.request("/api/review/create", method="POST",
+                                       raw=b" " * (3 * 1024 * 1024)),
+                          413, "payload_too_large")
+        self.assertIsNone(self.request("/api/draft")[1])
+
+    def test_review_non_object_body_is_validation_error(self):
+        self.assert_error(self.request("/api/review/create", method="POST",
+                                       body=[{"a": 1}]), 422, "validation_error")
+
+    def test_review_write_guards_cover_new_prefix(self):
+        cases = [
+            ({"X-JSA-Token": None}, 403, "authorization_error"),
+            ({"X-JSA-Token": "wrong"}, 403, "authorization_error"),
+            ({"Host": "evil.example"}, 403, "authorization_error"),
+            ({"Content-Type": "text/plain"}, 415, "unsupported_media_type"),
+            ({"Content-Length": str(MAX_BODY + 1)}, 413, "payload_too_large"),
+        ]
+        for headers, status, code in cases:
+            with self.subTest(headers=headers):
+                self.assert_error(self.request("/api/review/create", method="POST",
+                                               raw=b"{}", headers=headers), status, code)
+        self.assertIsNone(self.request("/api/draft")[1])
+
+    def test_review_conflict_copy_reload_resave_and_publish(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        fields = {"organization": "Copied organization", "role": "Copied role"}
+        saved = self.review("create", draft, kind="experience",
+                            fields={"organization": "Other tab", "role": "Engineer"})[1]
+        self.assert_error(self.review("create", draft, kind="experience", fields=fields,
+                                      idempotency_key="failed-create"), 409, "conflict")
+        latest = self.request("/api/draft")[1]
+        self.assertEqual(saved, latest)
+        status, recovered, _ = self.review("create", latest, kind="experience", fields=fields,
+                                           idempotency_key="after-refresh")
+        self.assertEqual(200, status)
+        self.assertEqual(fields["role"], recovered["items"][-1]["fields"]["role"])
+        recovered = self.review("decide", recovered, item_id=recovered["items"][-1]["id"],
+                                decision="confirm")[1]
+        self.assertEqual(200, self.review("preview", recovered, base_version_id=None)[0])
+        self.assertEqual(200, self.review("publish", recovered, base_version_id=None)[0])
+
+    def test_review_http_reject_clarify_and_edit_require_reconfirmation(self):
+        draft = self.request("/api/draft", method="POST", body={})[1]
+        draft = self.review("create", draft, kind="experience",
+                            fields={"organization": "A", "role": "B"})[1]
+        item_id = draft["items"][0]["id"]
+        for decision, expected in (("reject", "rejected"), ("clarify", "needs_clarification")):
+            draft = self.review("decide", draft, item_id=item_id, decision=decision)[1]
+            self.assertEqual(expected, draft["items"][0]["status"])
+            self.assertEqual([], self.review("preview", draft, base_version_id=None)[1]["content"])
+            self.assertEqual(draft, self.request("/api/draft")[1])
+        draft = self.review("decide", draft, item_id=item_id, decision="confirm")[1]
+        self.assertEqual("verified", draft["items"][0]["status"])
+        draft = self.review("edit", draft, item_id=item_id, changes={"role": "Edited"})[1]
+        self.assertEqual("draft", draft["items"][0]["status"])
+        self.assertEqual([], self.review("preview", draft, base_version_id=None)[1]["content"])
+        draft = self.review("decide", draft, item_id=item_id, decision="confirm")[1]
+        self.assertEqual("Edited", self.review("preview", draft, base_version_id=None)
+                         [1]["content"][0]["fields"]["role"])
+
     def test_host_binding_and_cli_shutdown(self):
         with self.assertRaises(ValueError):
             LocalHTTPServer(("0.0.0.0", 0), self.service, incoming_dir=self.root / "incoming")

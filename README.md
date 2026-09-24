@@ -1,10 +1,30 @@
 # Job Search Assistant
 
-本地优先的个人求职助手，**模块化单体**：Python 3.12 标准库 + SQLite，**运行时零第三方依赖**——
-不需要 `pip install` 任何包，不需要 Node.js，不需要前端构建。目标是让「找职位 → 核验职业事实 →
-匹配 → 申请准备」这条链路全部本地可审计、可回放，并让 LLM 只在受控、可撤销的位置参与。
+> English version: [README.en.md](README.en.md)
+
+本地优先的个人求职助手。把「**找职位 → 核验职业事实 → 匹配 → 申请准备**」这条链路全部放在自己机器上：
+**Python 3.12 标准库 + SQLite**，运行时**零第三方依赖**（不装包、不用 Node.js、不做前端构建），
+每一步都可审计、可回放，LLM 在受控、可撤销的位置参与。
+
+快速定位：
+
+- **现在在做** — Phase 2.5 人工整理与核验 UI：S3a 已交付，S3b / S4 待开始
+- **可运行基线** — `main` 上是 Phase 2 全部收尾（S1–S5）；Phase 2.5 在功能分支上，尚未合并
+- **技术栈** — Python 3.12+ 标准库 · SQLite · 原生模块化 JS（无框架 / 无构建 / 不连 CDN）
+- **测试** — 标准库 `unittest`（当前 130 项全绿，不访问网络 / LLM / MCP / 浏览器）
+- **开发方式** — builder + reviewer 双 agent 循环（`codex-hermes-loop.sh`，见下文）
+
+## 这个项目解决什么
+
+求职材料散在简历、笔记和各种网页里。一旦交给模型「帮忙总结」，就再也分不清哪些是自己真做过的事实、
+哪些是模型顺手写的漂亮话——而申请材料一旦出现这种句子，代价由用户承担。
+
+所以这里反过来做：**事实必须先能追到原文出处，并由用户逐条确认；模型只能产出草稿。**
+原文件、抽取文本、每次重跑、每次确认都留下不可覆盖的记录，任何可信结论都能回放到它的来源。
 
 ## 核心不变量
+
+违反这些约定的实现会被 reviewer 退回；它们是这个项目存在的理由，不是风格偏好。
 
 1. **LLM 输出一律是草稿**；未经用户显式确认的事实不会进入已发布版本，也不会出现在 `VerifiedEvidencePack` 里。
 2. 只有**显式确认项**为 `verified`；无文档来源的用户补充记为 `user_assertion`，不伪装成简历来源。
@@ -14,278 +34,131 @@
 6. **所有写路径必须经 Application Service**（携带 `RequestContext` + idempotency key，由服务层写审计）；
    adapter 不得直连领域表。
 
-## 现在开发到哪了
+## 现在做到哪了
 
-**当前在 Phase 2.5「人工整理与核验 UI」，S1 与 S2a 已通过审查，
-S2b / S3 / S4 待开始。**
-
-| 阶段 | 内容 | 状态 |
+| 阶段 | 目标 | 状态 |
 |---|---|---|
-| **Phase 0 基础层** | 模块边界、校验和保护的 SQLite 迁移、错误模型、RequestContext、幂等、审计 | ✅ 已验收 |
-| **Phase 1 Job Discovery** | SearchConfig 持久化、JobsPipe Provider 适配、分页搜索运行、原始响应留存、规范化、同 source 去重、不可变 job snapshot | ✅ 已验收 |
-| **Phase 2 Career Foundation** | 迁移 0004 + `career/` 领域层、受控文件存储、纯文本提取器、导入 / 抽取 / 确认 / 证据包 / 快照五个应用服务 | ✅ S1–S5 全部验收 |
-| **Phase 2.5 人工整理与核验 UI** | 多份 Markdown、中英文界面、自动保存 / 部分发布、多套 API 配置与 Mock 优化 / 合并 | 🚧 S1、S2a 已通过审查 / S2b、S3、S4 待开始 |
-| **B 步 真实 LLM** | 接入真实 provider（当前只有确定性假 provider） | ⏳ 待开始 |
-| **Phase 3 Job Matching** | MatchingPolicy、hard filter、shortlist、MatchRun / Result、失效重算 | ⏳ 未开始 |
+| **Phase 0** Foundation | 工程骨架与架构护栏（模块边界、迁移、错误模型、幂等、审计） | ✅ 已验收 |
+| **Phase 1** Job Discovery | 可靠地发现、保存、查看职位（原始响应留存、去重、不可变 snapshot） | ✅ 已验收 |
+| **Phase 2** Career Foundation | 可核验的个人职业知识库（导入 / 抽取 / 确认 / 证据包 / 快照） | ✅ S1–S5 已验收 |
+| **Phase 2.5** 人工整理与核验 UI | 在浏览器里手工整理、核验并发布职业事实 | 🚧 见下表 |
+| **B 步** 真实 LLM | 接入真实 provider（现在只有确定性假 provider） | ⏳ 待开始 |
+| **Phase 3** Job Matching | 低成本、可解释、可失效的匹配结果 | ⏳ 未开始 |
 | **Phase 4–7** | Application Core、Agent-ready Contracts、MCP Adapter、受控浏览器投递 | ⏳ 未开始 |
 
-分支约定：**每个切片一个功能分支、一轮 builder + reviewer 循环、每轮一次提交**。
-`main` 上的可运行基线是 **Phase 2 全部收尾（S1–S5）**；Phase 2.5 的实现分别落在 `phase2.5/*`
-功能分支上，尚未合并回 `main`。
+Phase 2.5 当前切片：
 
-## 快速开始（Easy start）
+| 切片 | 内容 | 状态 |
+|---|---|---|
+| S1 | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | ✅ |
+| S2a | 单命令启动、JSON HTTP adapter、原生前端骨架、中英文、Markdown 导入、只读双视图 | ✅ |
+| S2b | 双栏编辑：选区建条目、编辑 / 核验 / 拒绝 / 删除 / 撤销、自动保存状态机、发布与版本冲突 | ✅ 已通过审查 |
+| S3a | 多套 LLM API 配置、受控本地凭据、配置面板与契约 | ✅ 已交付 |
+| S3b | 引用 / prompt 面板、Mock 优化、一键替换与撤销 | ⏳ 待开始 |
+| S4 | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | ⏳ 待开始 |
 
-### 0. 前置
+分支约定：**每个切片一个功能分支、一轮 builder + reviewer 循环、每轮一次提交。**
+每阶段的 DoD（可验证的完成定义）与验收标准不在 README 里堆着，看
+[架构文档 §11](docs/Job%20Search%20Assistant%20技术架构文档.md) 与各阶段文档（见文末「文档」）。
 
-- Git；Python **3.12 或更高**（`pyproject.toml` 里 `requires-python = ">=3.12"`）。
-- **不需要装任何依赖**：运行时零第三方依赖，测试用标准库 `unittest`，前端是原生模块化 JS。
-- 不需要 Node.js、不需要前端构建、不需要数据库服务（SQLite 就在仓库目录下的文件里）。
+## 快速开始
 
-### 1. 取得代码
+前置只有一个：**Python 3.12+**（`requires-python = ">=3.12"`）。不需要装依赖、Node.js、数据库服务。
 
 ```bash
+# 1. 克隆代码
 git clone https://github.com/wwddddnnn/Job-Search-Engine.git
 cd Job-Search-Engine
-```
 
-想跑某个还在飞的切片，就 `git checkout phase2.5/s2a-web-entry`（切之前先确认该分支已推送到远端）。
+# 2. 指一个解释器：把 python3.12 的绝对路径写进仓库根 dev.env 的 PYBIN= 一行
+#    本机可用既有 conda 环境（3.12.14）：
+#    conda create -n Job-Search-Engine python=3.12 -y --solver classic   # 本机必须带 --solver classic
+#    PYBIN=/opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/python
 
-### 2. 准备解释器
-
-任意 3.12+ 的解释器都能跑；本机习惯用 conda：
-
-```bash
-conda create -n Job-Search-Engine python=3.12 -y --solver classic
-# 本机 conda 的 libmamba 求解器插件是坏的：必须显式 --solver classic。
-```
-
-然后把解释器路径写进仓库根 **`dev.env` 的 `PYBIN=` 一行**：
-
-```bash
-PYBIN=/path/to/python3.12
-```
-
-> **换机器时这一步必须做。** `dev.env` 里记录的是原机器的 conda 绝对路径，而
-> `codex-hermes-loop.sh` 和本项目约定的验收测试命令都读它——不改就会跑到不存在或版本不符的解释器。
-> 同名环境变量优先级更高，也可以临时覆盖：`PYBIN=/path/to/python ./codex-hermes-loop.sh "任务"`。
-
-（可选）想直接用 `job-search-assistant` 这个命令名，而不是 `python -m job_search_assistant`：
-`pip install -e .` —— 项目没有第三方依赖，这一步不会从网上拉包。
-
-### 3. 初始化数据库并跑测试
-
-```bash
-PYTHONPATH=src python -m job_search_assistant init-db
-PYTHONPATH=src python -m job_search_assistant db-info
-PYTHONPATH=src python -m unittest discover -s tests
-```
-
-用 `dev.env` 锁定的解释器（更稳妥，也是 CI/审查轮的口径）：
-
-```bash
+# 3. 初始化数据库 + 跑测试
 source dev.env
+PYTHONPATH=src "$PYBIN" -m job_search_assistant init-db
+PYTHONPATH=src "$PYBIN" -m job_search_assistant db-info
 PYTHONPATH=src "$PYBIN" -m unittest discover -s tests
+
+# 4. 起本地界面（S2a 起可用）
+PYTHONPATH=src "$PYBIN" -m job_search_assistant serve --port 8000 --host 127.0.0.1
+#    → 打开 http://127.0.0.1:8000/ ，终端 Ctrl-C 停止
 ```
 
-- 默认数据库是 `.job-search-assistant/job-search-assistant.sqlite`（在 `.gitignore` 里，删掉整个
-  `.job-search-assistant/` 目录即可重置）。
-- `--database` 与 `--migrations` 是**全局参数，必须写在子命令之前**：
+几条容易踩的：
 
-```bash
-PYTHONPATH=src python -m job_search_assistant --database /tmp/x.sqlite init-db   # ✅
-```
+- `dev.env` 里是**原机器的绝对路径**，换机器必须改 `PYBIN=`；同名环境变量优先，可临时覆盖：
+  `PYBIN=/path/to/python ./codex-hermes-loop.sh "任务"`。
+- 默认数据库 `.job-search-assistant/job-search-assistant.sqlite`（已在 `.gitignore` 里）；
+  删掉整个 `.job-search-assistant/` 目录即重置。
+- `--database` / `--migrations` 是**全局参数，必须写在子命令之前**：
+  `… python -m job_search_assistant --database /tmp/x.sqlite init-db`。
+- 想直接用 `job-search-assistant` 命令名（而非 `python -m job_search_assistant`）：`pip install -e .`，
+  零第三方依赖，不会联网拉包。
+- 跑某个还在飞的切片：`git checkout phase2.5/s2a-web-entry`（先确认该分支已推送到远端）。
 
-- 测试**不访问外部网络、LLM、MCP 或浏览器**；HTTP 测试仅使用本机 loopback。
-- 取 `dev.env` 里的路径时别用 `grep PYBIN dev.env`（注释里也有 `PYBIN=`），要用 `grep '^PYBIN=' dev.env`。
-
-### 4. 本地启动（S2a）
-
-在仓库根使用项目**既有 Conda 环境**，无需创建新环境，**不需要 Node.js、不需要前端构建**：
-
-```bash
-PYTHONPATH=src /opt/homebrew/Caskroom/miniconda/base/envs/Job-Search-Engine/bin/python -m job_search_assistant serve --port 8000 --host 127.0.0.1
-```
-
-打开 **http://127.0.0.1:8000/**，在终端按 **Ctrl-C** 停止，正常返回 0。
-也可先 `source dev.env`，再运行 `PYTHONPATH=src "$PYBIN" -m job_search_assistant serve`。
-服务只接受 `127.0.0.1`；端口占用时打印明确错误并返回 1，改用 `--port 8001` 后重新启动。
-`--port 0` 可分配空闲端口，终端会打印实际地址。静态资源全部随项目提供，不连接 CDN。
-
-数据库与迁移沿用上文默认值，`--database` / `--migrations` 仍放在 `serve` 之前。
-文档保存在数据库同目录的 `documents/`，导入临时文件位于 `incoming/`，请求结束后清理；
-默认均在 `.job-search-assistant/` 内。界面语言、文档和草稿重启后保留。
-已有多个档案时，本地单用户界面固定打开创建时间最早的档案；此切片没有档案切换功能。
-
-S2a 支持 Markdown 导入、多文档只读浏览、中英文、渲染/源码切换、打开或创建审核草稿。
-不提供选区建条目、编辑、确认、删除、撤销、自动保存或发布按钮；这些属于 S2b。
-Markdown 支持标题、段落、列表、强调、链接和围栏代码块子集，不承诺完整 CommonMark；
-源码视图显示完整原文，界面语言不改变简历内容。
-
-#### S2a 人工验收
-
-1. 用新的独立数据库启动（例如全局参数 `--database /tmp/jsa-s2a-check/app.sqlite`），
-   不清空已有 `.job-search-assistant/` 或演练库。首页应同时显示「还没有文档」和
-   「尚无已发布档案」，可继续导入；不能显示数据损坏或失败。
-2. 点击「打开审核草稿」，应显示草稿已保存与版本号，仍显示未发布档案的正常空状态。
-   导入两份不同的 UTF-8 `.md`，点击列表来回切换，检查文件名、时间、状态与正文对应。
-3. 切换中英文，文案立即切换，原文不翻译；切换渲染/源码，检查标题、列表、强调、链接、
-   代码块，以及源码的空行、空格和完整内容。切语言不重建正文，已有正文选区应保留。
-4. 切换到英文后 Ctrl-C 停止，再用同一数据库启动；语言、文档列表和审核草稿应恢复。
-   刷新后可重新选择任一文档；当前文档与渲染/源码选项仅为会话状态。
-5. 导入包含下列内容的 `injection-check.md`（仅用于本地检查）：
-
-   ````markdown
-   # Injection check
-   <script>alert('script')</script>
-   [unsafe](javascript:alert(1))
-   <img src=x onerror="alert('onerror')">
-   [safe](https://example.com)
-   **强调** 和 *斜体*
-   - 列表
-   ```text
-   <script>alert('code')</script>
-   ```
-   ````
-
-   渲染视图里原始 HTML 应显示为文字；内联 `<script>`、`javascript:` 链接和 `onerror=`
-   属性都不应生效，不弹窗、不生成原文指定的图片、不执行脚本。源码视图应完整保留上述文本。
-   安全链接允许 `http` / `https` / `mailto`；其余协议不产生可点击链接。
-6. 导入非 `.md`、非 UTF-8 文件或超限文件应出现相应语言的错误提示；导入失败保留待重试内容。
-   刷新前请先确认服务端已返回导入成功。服务重启后旧页面写请求会被 token 校验拒绝，刷新即可。
-
-#### S2a HTTP 契约
-
-- `GET /api/session` 返回 `{token, language, profile}`，无档案时 `profile=null`。
-- `GET /api/documents` 返回 `{id, filename, imported_at, status}` 列表；
-  `GET /api/documents/{id}` 在相同字段外返回 `content` 原文。
-- `POST /api/documents` 接受 `{filename, content, idempotency_key}`，返回
-  `{document_id, status}`。同键同输入重放，相同键不同输入返回 409。
-- `GET /api/profile` 返回快照；尚无档案时为 `null`，已创建但未发布时
-  `version=0`、`profile_version_id=null`，不将存储故障吞成空档案。
-- `GET /api/draft` 返回草稿或 `null`；`POST /api/draft` 接受可选的
-  `{display_name, idempotency_key}`，仅打开或创建草稿。
-- `GET /api/settings/ui` 返回 `{language}`；`PUT` 接受 `{language, idempotency_key?}`。
-  语言仅限 `zh` / `en`。草稿创建和设置写入未提供幂等键时，由 adapter 生成请求级键。
-- 写请求带 `X-JSA-Token`，所有请求校验 `Host`。请求体为 JSON，最大 **2 MiB（含 JSON 开销）**；
-  未知字段拒绝。错误只返回 `{error: {code, message, correlation_id}}`，页面按 code 翻译。
-
-自动测试用标准库真实 loopback HTTP 端口与 `urllib.request`，不访问外部网络。
-运行环境必须允许绑定 `127.0.0.1:0`；限制 socket 的沙箱无法完成这部分验收，不能据此标记通过。
-
-## 每个阶段的 DoD（完成定义）
-
-总表来自架构文档 §11.1；每个阶段更细的验收条目和各切片完成标志在对应阶段文档里（下表最后一列）。
-
-| 阶段 | 目标 | DoD（可验证的完成定义） |
-|---|---|---|
-| **Phase 0** Foundation | 本地工程骨架与架构护栏 | `migrate()` 后基础表存在且重跑无副作用；改动已执行迁移必须报错（checksum 保护）；相同 `scope/key/payload` 返回先前结果或阻止并发重复，相同 key 不同 payload 必须报冲突；每条审计带 action / target / actor / source / correlation ID；基础测试全过，且不需要外部 API、LLM、MCP、浏览器 |
-| **Phase 1** Job Discovery | 可靠地发现、保存、查看职位 | 同一 Provider 职位不重复插入（`provider + external_id` 幂等 upsert，重发现产生新 snapshot）；每页原始响应先落库、可回放；无法安全规范化的记录产生 ProviderError 且 run 记 `partially_succeeded`；`SearchRunService` 是唯一编排入口，UI 不感知 JobsPipe 字段；缺 API key 的真实 provider 必须报明确配置错误，不静默降级 |
-| **Phase 2** Career Foundation | 可核验的个人职业知识库 | 见下方「Phase 2 退出条件」7 条 |
-| **Phase 2.5** 人工整理与核验 UI | 用户手工整理、编辑并发布职业事实 | 见下方「Phase 2.5 验收标准」11 条 |
-| **Phase 3** Job Matching | 低成本、可解释、可失效的匹配结果 | 同版本输入优先命中缓存；每条解释显示真实 evidence 与 uncertainty；profile / job / policy 变更后旧结果标记 stale、走版本化重算而非改写旧结果 |
-| **Phase 4** Application Core | 无 Agent 也能完整管理申请准备与追踪 | 用户可手工创建并追踪申请；不受 evidence 支持的 claim 无法被保存为可提交内容 |
-| **Phase 5** Agent-ready Contracts | 让选定 runtime 安全消费后端能力 | 用一个受控 Agent 完成「检索 → 匹配 → 准备审阅包」，无浏览器、无提交 |
-| **Phase 6** MCP Adapter（按需） | 多外部 Agent Host 的标准互操作 | 至少两个目标 Host 能稳定完成只读与准备 workflow；无 tool 可直连数据库 |
-| **Phase 7** 受控浏览器辅助申请 | 人工监督下预填与提交 | 用户可在登录 / CAPTCHA / 未知题处接管；无 confirmation token 不可提交；失败不会误标为 Submitted |
-
-**Phase 4–7 的统一准入条件**（架构文档 §11.3）：Application 状态机先在没有 Agent 的情况下稳定运行；
-每个答案草稿有 claim→evidence 校验；review packet 与 approval token 已实现；execution event / audit
-schema 已落地；无 token 的 submit command 在集成测试中被拒绝；用户能用 UI 完成全部手工 fallback。
-
-### Phase 0 验收标准
-
-在新机器上，以给定数据库路径调用 `migrate()` 后三张基础表存在，且迁移再次运行无副作用；修改已执行
-迁移的内容后必须报错；相同 `scope/key/payload` 返回先前完成结果或阻止并发重复执行，相同
-`scope/key` 但不同 payload 必须报冲突；每项审计记录携带明确动作、目标、actor、source、correlation ID；
-所有基础测试通过，且无需外部 API、LLM、MCP 或浏览器。
-
-### Phase 1 验收标准
-
-单元测试覆盖 SearchConfig 校验、JobsPipe query 映射、HTTP 错误映射、职位规范化与 URL / 日期处理；
-服务集成测试用可注入的 fake provider，不访问网络，覆盖 SearchRun 成功、分页、部分失败、raw 落库、
-同一 `provider + external_id` 的再次发现、snapshot 变化与审计事件；附加 CLI / 本地库验证不需要真实
-API key。详见 [docs/phase1-job-discovery.md](docs/phase1-job-discovery.md)。
-
-### Phase 2 退出条件
-
-1. LLM 输出默认 draft；未经用户确认的事实**不出现**在 `VerifiedEvidencePack` 中。
-2. 原文件与提取文本长期留存且可回放；替换文件产生新 document，不覆盖历史。
-3. 重跑抽取新建 run；历史 run 与历史输出不被改写或删除。
-4. 只有显式确认项为 verified；无文档来源的用户补充记为 `user_assertion`，不伪装成简历来源。
-5. 每次确认产生可引用的 `ProfileVersion`，并有 before/after 修订审计可回溯。
-6. adapter 层不得绕开 application service 直连数据库。
-7. 全部测试通过（`unittest`，不访问网络 / LLM / MCP / 浏览器）。
-
-分片交付（每片一个功能分支、一轮循环）：
-
-| 片 | 范围 | 完成标志 |
-|---|---|---|
-| S1 | 迁移 0004 + `career/` 领域类型与 port | 迁移幂等且受 checksum 保护；状态机合法 / 非法跃迁与 evidence 规则单测通过 |
-| S2 | `ImportResumeDocument` + 受控文件存储 + 文本提取 port 骨架 | 原文件与提取文本留存可回放；替换文件产生新 document |
-| S3 | `StartExtractionRun` + 抽取 port（本阶段 fake）+ 草稿 schema 校验 | 输出只能是 draft；重跑新建 run 且不覆盖旧输出 |
-| S4 | `ConfirmExperienceFacts` → `ProfileVersion` + 修订审计 | 只有显式确认项为 verified；before/after 可回溯 |
-| S5 | `GetVerifiedEvidencePack` + `GetCareerProfileSnapshot` | 未确认事实进不了 pack；每项带 evidence id / scope / verified state；快照最小化 |
-
-> S4 口径：`ConfirmExperienceFacts` 只支持「接受 + 子项勾选」，不支持改写草稿值——编辑覆盖属于
-> Phase 2.5 的核验 UI，不是 Phase 2 的缺口。
-
-### Phase 2.5 验收标准
-
-1. README 提供实际可执行的单个 Python 启动命令、本地访问地址和停止方法；使用既有环境，不要求用户
-   自行装配服务对象、安装 Node.js 或执行前端构建；页面资源全部本地提供，不连 CDN。
-2. 用户可切换中英文界面，简历原文语言不变。
-3. 可导入多份 `.md`，查看渲染 / 源码，选中文字创建条目或直接手工添加；没有「关联为证据」操作。
-4. 经历、成果、技能可编辑、核验、删除；整理与核验进度自动保存，刷新 / 重启后恢复。
-5. 部分发布生成新版本，保留未修改的旧事实与尚未发布的草稿；删除 / 修改不改变历史版本。
-6. 手工补充和修改具备后台来源 / 修订记录，未确认内容不进入可信事实包。
-7. 可增删改多套 API 配置并切换；Key 本地保存、重启可用、界面掩码，日志与读取响应不泄露 Key。
-8. Mock 模式支持选区 / 整条引用、自定义 prompt、建议与改写结果、一键替换及撤销；普通模式明确说明
-   真实调用未接入。
-9. 用户可手工处理重复经历；显式启动 Mock 合并会自动写入草稿、可撤销，仍需人工发布。
-10. 测试覆盖自动保存顺序 / 失败、幂等重试、版本冲突、部分发布、旧结果覆盖防护与历史保留；自动测试
-    不访问外部网络，本地 HTTP 验证用标准库 `ThreadingHTTPServer(("127.0.0.1", 0))` 起真实端口 +
-    `urllib.request`，覆盖错误码映射、缺失 / 错误 `X-JSA-Token`、错误 `Host`、路径穿越、非法 JSON、
-    超限请求体、未知字段。
-11. 提供独立演练数据与人工验收步骤，演练数据不冒充用户已确认的职业事实；本阶段不要求 PDF / DOC 或
-    真实 LLM 调用通过验收。
-
-分片交付：
-
-| 片 | 内容 | 可人工检查的结果 |
-|---|---|---|
-| S1 ✅ | 审核草稿服务、来源保留、自动保存、部分发布与版本语义 | 测试验证重启恢复、未确认事实隔离、历史不可变 |
-| S2a ✅ | 启动入口（单命令 + README 三条信息）、JSON HTTP adapter（错误码映射、token + Host 校验、静态资源安全）、原生前端骨架、中英文切换、Markdown 导入与多文档切换、只读「渲染 / 源码」双视图、空状态文案 | 一条命令起服务 → 浏览器导入自己的 `.md` → 切换中英文 → 切换渲染 / 源码 → 重启后仍在 |
-| S2b ⏳ | 双栏编辑：选区创建条目（带 locator）、编辑 / 核验 / 拒绝 / 待澄清 / 删除 / 撤销、自动保存状态机、发布与版本冲突提示 | 用户用自己的 `.md` 完成手工整理与发布 |
-| S3 ⏳ | 多配置管理、引用 / prompt 面板、Mock 优化及一键替换 | 不需要 Key 即可演练结果应用与撤销 |
-| S4 ⏳ | 多文档补充已有经历、Mock 自动合并、完整人工验收说明 | 多份简历共同形成职业档案，可测试合并和撤销 |
+**运行细节与人工验收步骤**（含自动测试覆盖不到、必须人工点的三项）：
+[docs/manual-acceptance.md](docs/manual-acceptance.md)；各切片的 HTTP 契约在
+[docs/phase2.5-career-review-ui.md](docs/phase2.5-career-review-ui.md)。
 
 ## 开发方式：builder + reviewer 双 agent 循环
 
-本仓库不是「一个人写、另一个人看」，而是**两个互相独立的 agent 在同一个 checkout、同一条功能分支上
-对打**：一个只负责写（builder），一个只负责审（reviewer），编排脚本 `codex-hermes-loop.sh` 负责把两者
-串成循环并把每轮结果落进 `DEVELOPMENT_LOG.md`。
+一个切片（slice）落在一条功能分支上，由 `codex-hermes-loop.sh` 编排成若干轮循环。每轮的节奏固定：
+**reviewer 上一轮的结论给这一轮定活儿 → builder 动手写 → 测试门 → reviewer 检查并裁决 → 落盘提交。**
+两个 agent 互相独立：builder 只写代码、只改工作区，不碰 git；reviewer 只输出裁决文本，没有任何写文件或
+执行命令的能力；中间的收改动、跑测试、写日志、commit、push 全部由脚本做。
+
+人在这条流水线上出现两次：开工时给一份任务书（第 1 轮的活儿从这里来），以及 `ESCALATE` 时拍板。
 
 ```text
 功能分支
   └─ 第 N 轮
-       ├─ builder  按任务书写代码（默认 Codex）。前置：脚本注入 docs/builder-conventions.md
-       ├─ 收改动   git add -A + git diff --cached（含新增文件；DEVELOPMENT_LOG.md 除外）
-       ├─ 测试门   跑 unittest —— 不通过就没有 PASS 可谈
-       ├─ reviewer 拿「架构 / 阶段文档 + 本轮 diff + 测试结果」审查，输出 STATUS / COMMIT_MSG / LOG_NOTE
-       ├─ 追加 DEVELOPMENT_LOG.md
-       └─ commit + push（无论通过与否都提交，保证随时可回滚）
+       ├─ builder  按任务书写代码
+       ├─ 收改动   暂存全部改动，生成本轮 diff
+       ├─ 测试门   跑单元测试 —— 不通过就没有 PASS 可谈
+       ├─ reviewer 根据「架构 / 阶段文档 + 本轮 diff + 测试结果」审查
+       ├─ 记日志   追加本轮结论
+       └─ 提交推送（无论通过与否，保证随时可回滚）
 ```
 
-| STATUS | 含义 | 脚本行为 |
+### 一轮里的七步
+
+1. **组装 builder 的输入。** 脚本在任务书后面追加三段：本项目的解释器与测试命令、builder 协作约定全文、
+   以及**上一轮 reviewer 的审查意见与上一轮测试结果**。第 1 轮没有第三段，活儿全部来自人给的任务书；
+   从第 2 轮起，这一轮要改成什么样、改到什么程度算过关，由 reviewer 上一轮的结论定下来——审查意见就是
+   下一轮的施工单。
+2. **builder 开发。** 默认用 headless Codex 跑，它的输出流会被本地脚本实时渲染成人可读行；它只改工作区
+   文件，提交和推送都不碰。
+3. **收改动。** 脚本把工作区的全部改动（含新增的未跟踪文件，开发日志除外）暂存下来，生成一份 diff。
+   这份 diff 就是本轮唯一的审查对象，reviewer 每轮只看到当轮改动。
+4. **测试门。** 跑项目的单元测试。测试红着，这一轮就拿不到 `PASS`：即使 reviewer 判了通过，脚本也会降级
+   成 `NEEDS_FIX`，并在日志里标出原因。
+5. **reviewer 检查并裁决。** 脚本把「本次任务 + 架构与阶段文档全文 + 本轮 diff + 测试结果」拼成一份输入
+   交给 Hermes。reviewer 的开头三行是三个固定字段——审查结论 STATUS、提交信息 COMMIT_MSG、日志说明
+   LOG_NOTE——字段名写错这轮审查就作废；正文再按「文件与行号 / 违反的条款 / 现象 / 为什么有问题 /
+   建议修改方向」逐条写问题。
+6. **落盘。** 脚本把日志说明追加进开发日志，按结论给提交信息加前缀：通过的原样，待修改的加
+   「第N轮/待修改」，需人工确认的加「需人工确认」。然后提交并推送——通过与否都提交，分支上始终留着
+   一个可回滚的点。
+7. **决定下一步。** `PASS` 结束（退出码 0）；`NEEDS_FIX` 回到第 1 步，把刚拿到的审查意见交给 builder
+   再干一轮（默认最多 3 轮）；`ESCALATE` 停下等人。
+
+| STATUS | reviewer 的意思 | 脚本接着做什么 |
 |---|---|---|
 | `PASS` | 未发现违反不变量 / 验收标准的问题 | 提交推送，退出码 0 |
 | `NEEDS_FIX` | 有明确、可指出修改方向的问题 | 提交推送，把意见带回 builder 进下一轮（上限 `MAX_ATTEMPTS`，默认 3 轮） |
 | `ESCALATE` | 方向存疑 / 不可回滚决策 / 同一问题反复 | 提交推送，退出码 2，停下等人 |
 
-另外两种自动停下（退出码 2）的情况：跑满 `MAX_ATTEMPTS` 仍未通过；reviewer 输出里读不到合法 `STATUS`。
-测试门与 reviewer 结论冲突时（reviewer 说 PASS 但测试没过）自动降级为 `NEEDS_FIX`，并在日志里标原因。
+脚本会自动停下等人的几处情形（都以退出码 2 收尾，不会静默继续）：
 
-用法：
+- 跑满 `MAX_ATTEMPTS` 仍未通过，或 reviewer 输出里读不到合法 `STATUS`。
+- 本轮 diff 为空——builder 没真正动手。
+- builder 自己报出配额 / 认证问题。此时脚本会先打印工作区**残留清单**（改动条目数、未跟踪文件数），
+  提醒「本轮没有可审查的产物」并不等于工作区干净：半成品可能已经躺在那里了。
+- reviewer 输出带 prompt 回显、却找不到本轮 nonce 边界（CLI 输出格式变了）。
+
+### 用法
 
 ```bash
 git checkout -b phase2.5/s2b-editing          # 脚本拒绝在 main/master 上直接跑
@@ -294,19 +167,19 @@ git checkout -b phase2.5/s2b-editing          # 脚本拒绝在 main/master 上�
 
 ### 为什么这样切分
 
-- **审查方的独立性靠能力削减来保证，而不是靠提醒。** reviewer 用
-  `hermes chat -Q -t vision --ignore-rules -c <REVIEWER_SESSION> --create-if-missing --query-file <prompt>`
-  调用：`-t vision` 只注入一个工具，**没有**写文件、bash、读文件能力，比「让模型自觉只读」更可靠；
-  `--ignore-rules` 让它不吸收本机记忆 / `AGENTS.md`，只依据架构文档与 diff 判断；`-Q` 让输出只剩最终回答，
-  避免 prompt 回显与 STATUS 解析撞车。
-- **两方必须看同一份文件状态。** builder 与 reviewer 原地读写同一个 `~/code/Python/Job-Search-Engine`：
-  禁止 `git worktree`、禁止为开发再 clone 一份、禁止改完拷回来。否则 reviewer 审的 diff 与 builder 改的
-  文件不是同一份，去重 / 合并这类结论无法复核。**换机器后这条也一样**：两边都指向本仓库这一份 checkout。
-- **每轮各自提交，reviewer 看到的 diff 只含当轮改动**（不是它漏看历史）。
-- **理由与代价**：双 agent 能拦住「测试过了但违反不变量」这类问题（实测 S2–S5 期间每片都有
-  NEEDS_FIX 收口轮），代价是每轮多一次审查调用与一次提交；所以 builder 侧有硬性的效率约定
-  （见 `docs/builder-conventions.md`：合并读取、先扫后读、合并验证、不重复确认——逐文件 `cat` 是本项目
-  最大的 token 开销来源）。
+- **写权限与审查权分在两个进程里。** reviewer 走
+  `hermes chat -Q -t vision --ignore-rules -c <REVIEWER_SESSION> --create-if-missing --query-file <prompt>`：
+  `-t vision` 只注入 `vision_analyze` 一个工具，写文件、bash、读文件的能力在它那儿根本不存在，独立性由
+  能力削减保证；`--ignore-rules` 让它不吃本机记忆与 `AGENTS.md`，只按架构文档和本轮 diff 判断；`-Q` 让
+  输出只剩最终回答加一行 `session_id`，格式说明不会和 STATUS 解析撞车。
+- **两边看同一份文件状态。** builder 与 reviewer 原地读写同一个 checkout：禁止 `git worktree`、
+  禁止为开发再 clone 一份、禁止改完拷回来。这样 reviewer 审的 diff 就是 builder 刚改过的那份文件，
+  去重 / 合并这类结论事后复核得动（换机器后这条照样成立）。
+- **每轮各提交一次，审查范围收敛到当轮。** reviewer 拿到的 diff 只含这一轮的改动，历史改动不会混进
+  这次的判断。
+- **成本账。** 每轮 = 一次 builder 调用 + 一次审查调用 + 一次提交；实测 S2–S5 每片都出现过 `NEEDS_FIX`
+  收口轮，也就是一片常要两轮才过。所以 builder 侧有硬性的效率约定（见 `docs/builder-conventions.md`：
+  合并读取、先扫后读、合并验证、不重复确认——逐文件 `cat` 是本项目最大的 token 开销来源）。
 
 ### 关键文件与可调项
 
@@ -343,49 +216,28 @@ src/job_search_assistant/
 
 migrations/             # 有序、校验和保护的 SQLite 迁移（新增迁移，绝不改旧文件）
 tests/                  # 标准库 unittest 测试（HTTP 仅访问本机 loopback）
-docs/                   # 架构与各阶段设计说明
+docs/                   # 架构、各阶段设计说明与运行 / 验收手册
 scripts/                # 开发辅助脚本
 codex-hermes-loop.sh    # builder + reviewer 循环编排
 ```
 
 依赖方向：`core` ← 领域模块 ← `app_services` ← adapter。领域代码不 import SQLite 具体实现，
 HTTP / UI adapter 不直连数据库、也不调用 store 内部写接口。
-
-## Career 应用服务怎么装配
-
-Career 目前只有应用服务与 adapter 层，没有 CLI 业务命令；直接调用时自行装配：
-
-```python
-from job_search_assistant.app_services import ImportResumeDocument, build_foundation
-from job_search_assistant.infrastructure.files import (
-    FileSystemDocumentStorage, PlainTextResumeExtractor,
-)
-from job_search_assistant.infrastructure.sqlite import SQLiteCareerStore
-
-foundation = build_foundation(
-    database_path=".job-search-assistant/job-search-assistant.sqlite",
-    migrations_path="migrations",
-)
-store = SQLiteCareerStore(foundation.database)
-storage = FileSystemDocumentStorage(".job-search-assistant/documents")
-service = ImportResumeDocument(
-    store=store, storage=storage, text_extractor=PlainTextResumeExtractor(storage),
-)
-```
-
-完整链路（导入 → 抽取 → 确认 → 证据包 / 快照）的调用顺序见 `tests/test_career_snapshot.py`，
-它同时演示了上面每条不变量是怎么被断言的。
+Career 应用服务的装配示例（当前没有 CLI 业务命令）见
+[docs/manual-acceptance.md §4](docs/manual-acceptance.md#4-手工装配调用career-应用服务)。
 
 ## 文档
 
 - [docs/Job Search Assistant 技术架构文档.md](docs/Job%20Search%20Assistant%20技术架构文档.md)
   — 总架构：§5 不变量、§6 模块边界、§9 状态机、§11 分阶段计划与 DoD，**冲突时以它为准**
+- [docs/manual-acceptance.md](docs/manual-acceptance.md) — 本地运行细节、S2a / S2b / S3a 人工验收步骤、
+  自动测试的覆盖边界、Career 应用服务手工装配
 - [docs/phase0-foundation.md](docs/phase0-foundation.md) — Phase 0 设计说明与验收标准
 - [docs/phase1-job-discovery.md](docs/phase1-job-discovery.md) — Phase 1 范围、管道、测试策略
 - [docs/phase2-career-foundation.md](docs/phase2-career-foundation.md) — Phase 2 设计说明、退出条件、
   切片表与各切片审查遗留项
 - [docs/phase2.5-career-review-ui.md](docs/phase2.5-career-review-ui.md) — Phase 2.5 交互、LLM 配置与
-  Mock 范围、版本规则、人工验收标准与 S2a / S2b 契约
+  Mock 范围、版本规则、验收标准与各切片契约
 - [docs/builder-conventions.md](docs/builder-conventions.md) — builder 的硬性约束、效率约定、自测与提交规则
-- [docs/hermes-reviewer-kit.md](docs/hermes-reviewer-kit.md) — 双 agent 套件的本地适配说明与实证记录
+- [docs/hermes-reviewer-kit.md](docs/hermes-reviewer-kit.md) — 循环的本地适配记录与断点续跑准则
 - `DEVELOPMENT_LOG.md` — 每轮 builder / reviewer 的结果与提交信息

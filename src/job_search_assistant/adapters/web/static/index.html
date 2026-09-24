@@ -20,7 +20,9 @@
     <button id="open-draft" data-i18n="openDraft">打开审核草稿</button>
   </section>
   <p id="error" role="alert" hidden></p>
+  <section id="llm-configs" class="status"></section>
   <main>
+    <section class="left-column">
     <aside>
       <h2 data-i18n="documents">简历文档</h2>
       <label class="import"><span data-i18n="import">导入 Markdown</span>
@@ -44,7 +46,9 @@
       <article id="rendered"></article>
       <pre id="source" hidden></pre>
     </section>
+    </section>
+    <section id="editor" hidden></section>
   </main>
-  <footer data-i18n="scope">当前支持导入与只读浏览，经历整理与发布将在后续提供。</footer>
+  <footer data-i18n="scope">整理内容自动保存；发布前请逐项确认。</footer>
 </body>
 </html>

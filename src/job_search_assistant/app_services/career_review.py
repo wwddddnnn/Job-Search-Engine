@@ -139,10 +139,12 @@ class CareerReviewService:
             base = self.store.get_review_base_facts(base_version_id) if base_version_id else None
             publication = prepare_publication(draft, base, allow_empty=True)
             return {"draft_id": draft_id, "draft_version": expected_version,
-                    "base_version_id": base_version_id, "summary": publication.summary}
+                    "base_version_id": base_version_id, "summary": publication.summary,
+                    "content": [{"kind": item.kind.value, "fields": dict(item.fields)}
+                                for item in seed_items(publication.facts)]}
         except ApplicationError as exc:
             if context is not None:
-                exc.with_correlation_id(context.correlation_id)
+                raise exc.with_correlation_id(context.correlation_id)
             raise
 
     def publish(

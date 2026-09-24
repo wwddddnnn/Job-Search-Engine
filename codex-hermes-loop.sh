@@ -371,7 +371,15 @@ while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
   if builder_looks_broken "$WORKDIR/builder_out.txt" "$WORKDIR/builder_raw.jsonl"; then
     warn "builder 报告配额/认证问题，无法继续。原始输出尾部："
     tail -6 "$WORKDIR/builder_out.txt" | sed 's/^/    /'
-    warn "本轮未产生可审查的改动，请人工处理（换 builder 或补额度）后重跑。"
+    # 「本轮没有可审查的产物」= 这一轮没提交任何东西，**不代表工作区干净**：
+    # builder 可能已经改到一半，半成品留在工作区。把残留清单直接打出来，避免被误读成「什么都没做」。
+    RESIDUE_FILES="$(git status --porcelain -- . | wc -l | tr -d ' ')"
+    RESIDUE_NEW="$(git status --porcelain -- . | grep -c '^??' || true)"
+    warn "本轮没有可审查的产物（未提交任何东西），但工作区可能有半成品："
+    warn "    分支 $(git branch --show-current) · 改动条目 ${RESIDUE_FILES} 个（其中未跟踪 ${RESIDUE_NEW} 个）"
+    git diff --stat | tail -3 | sed 's/^/    /'
+    warn "不要在没有判定残留之前重跑或丢弃：先 git status --short / git diff --stat 看清残留，"
+    warn "再按 docs/hermes-reviewer-kit.md「断点续跑准则」决定丢弃还是用同一份任务书续跑。"
     exit 2
   fi
   if [ "$BUILDER_RC" -ne 0 ]; then
