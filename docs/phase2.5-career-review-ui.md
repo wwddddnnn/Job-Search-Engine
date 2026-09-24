@@ -1,10 +1,11 @@
 # Phase 2.5 人工整理与核验 UI
 
-状态：S1、S2a、S2b 已交付并通过审查；S3 已拆为 S3a / S3b；S3a 已交付，S3b / S4 未开始。
+状态：S1、S2a、S2b 已交付并通过审查；S3 已拆为 S3a / S3b，S3a 已交付，S3b / S4 未开始。
 更新日期：2026-09-19。
 
-本文记录用户确认的产品行为；切片按建议顺序交付，S1、S2a 已交付并通过审查，
-S2b 已交付并通过审查。已实现范围见文末 S1、S2a、S2b 与 S3a 契约；S3 已拆为 S3a / S3b；S3a 已交付，S3b / S4 未开始。
+本文记录用户确认的产品行为与各切片契约；交付顺序见文末「实现边界与建议切片」，
+已实现范围见文末各切片契约节。运行方式与人工验收步骤在
+[本地运行与人工验收手册](manual-acceptance.md)。
 
 ## 目标与范围
 
@@ -149,7 +150,24 @@ Phase 2 的确认接口仅支持抽取结果索引勾选；本阶段需要增加
 
 ## S1 与 S2a 契约（已交付并通过审查）
 
-下文说明 S1 审核服务；S2a 启动入口、人工验收与 HTTP 契约见 [README 第 4 节](../README.md#4-本地启动s2a--s2b)。
+下文说明 S1 审核服务；S2a 的启动方式与人工验收步骤见
+[本地运行与人工验收手册](manual-acceptance.md#s2a-人工验收)，HTTP 契约如下。
+
+**S2a HTTP 契约**
+
+- `GET /api/session` 返回 `{token, language, profile}`，无档案时 `profile=null`。
+- `GET /api/documents` 返回 `{id, filename, imported_at, status}` 列表；`GET /api/documents/{id}`
+  在相同字段外返回 `content` 原文。`POST /api/documents` 接受
+  `{filename, content, idempotency_key}`，返回 `{document_id, status}`；同键同输入重放，
+  相同键不同输入返回 409。
+- `GET /api/profile` 返回快照；尚无档案时为 `null`，已创建但未发布时 `version=0`、
+  `profile_version_id=null`，不将存储故障吞成空档案。
+- `GET /api/draft` 返回草稿或 `null`；`POST /api/draft` 接受可选的
+  `{display_name, idempotency_key}`，仅打开或创建草稿。
+- `GET /api/settings/ui` 返回 `{language}`；`PUT` 接受 `{language, idempotency_key?}`，
+  语言仅限 `zh` / `en`。草稿创建和设置写入未提供幂等键时，由 adapter 生成请求级键。
+- 写请求带 `X-JSA-Token`，所有请求校验 `Host`。请求体为 JSON，最大 **2 MiB（含 JSON 开销）**；
+  未知字段拒绝。错误只返回 `{error: {code, message, correlation_id}}`，页面按 code 翻译。
 
 装配：`CareerReviewService(store=SQLiteReviewStore(foundation.database))`。
 公开类型由 `career` 导出；应用服务和 SQLite 实现分别由 `app_services` 与
@@ -217,7 +235,7 @@ CareerStore 内部重构须同步审阅 adapter；这不是 UI/HTTP 可调用的
 
 ## S2b 契约（已交付并通过审查）
 
-人工验收、启动方式见 [README 第 4 节](../README.md#4-本地启动s2a--s2b)。
+人工验收、启动方式见 [本地运行与人工验收手册](manual-acceptance.md#s2b-人工验收)。
 S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
 
 - `GET /api/profile/versions`：`{id, version, created_at}` 列表，按版本倒序；无版本返回 `[]`。
@@ -242,6 +260,8 @@ S2b 不包括 S3/S4 的 LLM 配置、Mock 优化或合并。
   取消预览或开始新编辑才废弃该请求；有未保存输入/composer 时 editor-actions 阻止预览和发布。
 - 修改已确认内容立即显示待核验，保存后仍须重新确认；reject/clarify 不使新事实进入发布内容。
   无已发布档案、尚无草稿、草稿无条目分别展示未发布提示、创建草稿提示和手工填写引导。
+- 超过 2 MiB、且声明长度不超过 4 MiB 的请求体，最多用 1 秒分块读取丢弃后返回 JSON 413；
+  更大的声明或未及时传完的请求会关闭连接，客户端可能仅收到断连。2 MiB 接受上限不变。
 
 
 composer 在冲突、认证失败、网络失败、保存中或待保存时只读，仍可聚焦、选中和复制；
@@ -262,7 +282,7 @@ JS 测试通过全新 JavaScriptCore 上下文模拟刷新，验证冲突输入�
 并解除预览门控；HTTP 测试验证冲突、GET 最新草稿、新键保存及发布完整链路。
 逻辑测试依赖 **macOS 系统 JavaScriptCore，非 darwin 平台会静默 skip**（unittest 显示 skipped）。
 view 测试只用最小 DOM 夹具验证事件与渲染分支，不代表真实浏览器验收；双向选区、输入法组合
-输入、粘贴大段文本必须按 README 人工操作，不能声称已被自动测试覆盖。
+输入、粘贴大段文本必须按 [人工验收手册](manual-acceptance.md#s2b-人工验收)操作，不能声称已被自动测试覆盖。
 
 
 ## S3a 契约（已交付）
@@ -270,7 +290,7 @@ view 测试只用最小 DOM 夹具验证事件与渲染分支，不代表真实�
 S3 拆为 S3a（配置与凭据）与 S3b（引用 / prompt、Mock 优化、替换 / 撤销）。
 本轮交付 S3a，S3b / S4 未开始；没有真实 LLM 客户端、网络探测或 Key 有效性验证。
 「配置入口可用」不代表「真实调用已接入」。验收标准第 7 条由本切片实现；第 8 条
-除普通模式提示外仍待 S3b。人工步骤见 README 第 4 节。
+除普通模式提示外仍待 S3b。人工步骤见 [人工验收手册](manual-acceptance.md#s3a-人工验收)。
 
 ### 持久化与秘密边界
 
